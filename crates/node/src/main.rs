@@ -1,0 +1,160 @@
+//! `lastchange` CLI. Data lives in a local directory (default ./.lastchange):
+//! `key` (32-byte ed25519 secret, nothing else) and `ledger.db`.
+
+use anyhow::{bail, Context, Result};
+use clap::{Parser, Subcommand};
+use lc_core::*;
+use lc_ledger::Ledger;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Parser)]
+#[command(name = "lastchange", about = "Pseudonymous P2P classifieds with reputation.")]
+struct Cli {
+    #[arg(long, default_value = ".lastchange", global = true)]
+    dir: PathBuf,
+    #[arg(long, default_value_t = DEFAULT_STAMP_BITS, global = true)]
+    stamp_bits: u32,
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Generate a local keypair (your only identity).
+    Keygen,
+    /// Show your pseudonym and public key.
+    Whoami,
+    /// Post an offer or request.
+    Post {
+        #[arg(value_parser = ["offer", "request"])] kind: String,
+        #[arg(long)] title: String,
+        #[arg(long, default_value = "")] desc: String,
+        #[arg(long, default_value = "")] price_hint: String,
+        #[arg(long, default_value = "misc")] category: String,
+        #[arg(long, default_value_t = 30)] days: u64,
+        #[arg(long)] image: Vec<String>,
+    },
+    /// List active listings with seller reputation.
+    List { #[arg(long)] kind: Option<String> },
+    /// Search listings by text.
+    Search { query: String },
+    /// Seller: confirm a completed deal with a buyer (enables their rating).
+    CompleteDeal { listing_id: String, #[arg(long)] buyer: String },
+    /// Buyer: rate a seller after receiving, referencing the seller's receipt.
+    Rate { receipt_id: String, #[arg(long)] score: u8, #[arg(long, default_value = "")] comment: String },
+    /// Flag a listing or author for others (gossiped).
+    Report { target_id: String, #[arg(long)] reason: String },
+    /// Locally block a pseudonym, pubkey or entry id.
+    Block { key: String },
+    /// Show ledger stats and Merkle root.
+    Status,
+    /// Run a P2P node: sync local entries and receive peers' entries.
+    Peers {
+        #[arg(long, default_value = "/ip4/0.0.0.0/tcp/0")] listen: String,
+        #[arg(long)] dial: Vec<String>,
+    },
+}
+
+fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() }
+
+fn load_id(dir: &std::path::Path) -> Result<Identity> {
+    let b = std::fs::read(dir.join("key")).context("no key; run `lastchange keygen`")?;
+    let a: [u8; 32] = b.try_into().map_err(|_| anyhow::anyhow!("bad key file"))?;
+    Ok(Identity::from_secret_bytes(&a))
+}
+
+fn items(led: &Ledger) -> Result<Vec<lc_reputation::Item>> {
+    Ok(led.all()?.into_iter().map(|e| {
+        let time = match &e.payload { Payload::Listing(l) => l.created, _ => now() };
+        lc_reputation::Item { id: e.id, author: e.env.author, payload: e.payload, time }
+    }).collect())
+}
+
+fn print_listings(led: &Ledger, f: impl Fn(&Listing) -> bool) -> Result<()> {
+    let it = items(led)?;
+    let rep = lc_reputation::compute(&it, now(), &Default::default());
+    for i in &it {
+        if let Payload::Listing(l) = &i.payload {
+            if l.expiry < now() || !f(l) || led.is_blocked(&i.author)? || led.is_blocked(&pseudonym_of(&i.author))? { continue; }
+            let r = rep.get(&i.author);
+            println!("{} [{:?}] {} | {} | hint: {} | seller {} rep {:.2} ({} ratings, {} reports)",
+                &i.id[..16], l.kind, l.title, l.category, l.price_hint, &pseudonym_of(&i.author)[..12],
+                r.map(|s| s.mean).unwrap_or(0.0), r.map(|s| s.count).unwrap_or(0), r.map(|s| s.reports).unwrap_or(0));
+        }
+    }
+    Ok(())
+}
+
+fn resolve(led: &Ledger, prefix: &str) -> Result<lc_ledger::Entry> {
+    let m: Vec<_> = led.all()?.into_iter().filter(|e| e.id.starts_with(prefix)).collect();
+    match m.len() { 1 => Ok(m.into_iter().next().unwrap()), 0 => bail!("no entry {prefix}"), _ => bail!("ambiguous id {prefix}") }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    std::fs::create_dir_all(&cli.dir)?;
+    let led = Ledger::open(&cli.dir.join("ledger.db"), cli.stamp_bits)?;
+    let seal_add = |p: Payload| -> Result<String> {
+        let env = load_id(&cli.dir)?.seal(&p, cli.stamp_bits);
+        led.append(&env)?;
+        println!("{}", env.id());
+        Ok(env.id())
+    };
+    match cli.cmd {
+        Cmd::Keygen => {
+            let p = cli.dir.join("key");
+            if p.exists() { bail!("key already exists at {}", p.display()); }
+            let id = Identity::generate();
+            std::fs::write(&p, id.secret_bytes())?;
+            #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?; }
+            println!("pseudonym {}\npubkey    {}", id.pseudonym(), id.public_hex());
+        }
+        Cmd::Whoami => { let id = load_id(&cli.dir)?; println!("pseudonym {}\npubkey    {}", id.pseudonym(), id.public_hex()); }
+        Cmd::Post { kind, title, desc, price_hint, category, days, image } => {
+            let kind = if kind == "offer" { ListingKind::Offer } else { ListingKind::Request };
+            seal_add(Payload::Listing(Listing { kind, title, desc, price_hint, category, expiry: now() + days * 86400, image_hashes: image, created: now() }))?;
+        }
+        Cmd::List { kind } => print_listings(&led, |l| kind.as_deref().map_or(true, |k| format!("{:?}", l.kind).eq_ignore_ascii_case(k)))?,
+        Cmd::Search { query } => { let q = query.to_lowercase(); print_listings(&led, |l| format!("{} {} {}", l.title, l.desc, l.category).to_lowercase().contains(&q))? }
+        Cmd::CompleteDeal { listing_id, buyer } => {
+            let e = resolve(&led, &listing_id)?;
+            if e.env.author != load_id(&cli.dir)?.public_hex() { bail!("only the seller of this listing can confirm a deal"); }
+            seal_add(Payload::DealReceipt(DealReceipt { listing_id: e.id, buyer }))?;
+        }
+        Cmd::Rate { receipt_id, score, comment } => {
+            let r = resolve(&led, &receipt_id)?;
+            let Payload::DealReceipt(d) = &r.payload else { bail!("not a deal receipt") };
+            if d.buyer != load_id(&cli.dir)?.public_hex() { bail!("this receipt names a different buyer"); }
+            seal_add(Payload::Rating(Rating { listing_id: d.listing_id.clone(), seller: r.env.author.clone(), receipt_id: r.id.clone(), score, comment }))?;
+        }
+        Cmd::Report { target_id, reason } => { seal_add(Payload::Report(Report { target_id, reason }))?; }
+        Cmd::Block { key } => { led.block(&key)?; println!("blocked {key}"); }
+        Cmd::Status => println!("entries {}\nmerkle_root {}", led.len()?, led.merkle_root()?),
+        Cmd::Peers { listen, dial } => {
+            use lc_net::{Command, Event};
+            let (ctx, crx) = tokio::sync::mpsc::channel(256);
+            let (etx, mut erx) = tokio::sync::mpsc::channel(256);
+            tokio::spawn(lc_net::run(listen.parse()?, crx, etx));
+            for d in dial { ctx.send(Command::Dial(d.parse()?)).await?; }
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => for e in led.all()? { ctx.send(Command::Publish(e.env)).await?; },
+                    ev = erx.recv() => match ev {
+                        None => break,
+                        Some(Event::Listening(a)) => println!("listening {a}"),
+                        Some(Event::Connected(p)) => { println!("peer {p}"); for e in led.all()? { ctx.send(Command::Publish(e.env)).await?; } }
+                        Some(Event::Received(env)) => match led.append(&env) {
+                            Ok(true) => println!("+ {}", env.id()),
+                            Ok(false) => {}
+                            Err(e) => eprintln!("rejected: {e}"),
+                        },
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
