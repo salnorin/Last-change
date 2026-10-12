@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Last-change</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:900px;margin:auto;padding:1rem;background:#111;color:#eee}
+input,select,textarea,button{font:inherit;padding:.4rem;margin:.2rem;background:#222;color:#eee;border:1px solid #444;border-radius:6px;max-width:100%}
+button{cursor:pointer;background:#2b5}.card{border:1px solid #333;border-radius:8px;padding:.6rem;margin:.5rem 0}
+.muted{color:#999;font-size:.85em}code{word-break:break-all}.legal{border:1px solid #a63;padding:.5rem;border-radius:6px;font-size:.85em}
+textarea{width:95%}
+</style></head><body>
+<h1>Last-change</h1>
+<p class="legal">⚠️ No token, no payments, no custody. Illegal goods and services are forbidden; pseudonymity does not exempt anyone from the law.</p>
+<p class="muted">Your pseudonym: <code id="me"></code></p>
+<section><h2>Post</h2>
+<select id="kind"><option value="offer">Offer</option><option value="request">Request</option></select>
+<input id="title" placeholder="Title"><input id="category" placeholder="Category (e.g. art)">
+<input id="hint" placeholder="Price hint (free text)"><br>
+<textarea id="desc" placeholder="Description" rows="2"></textarea><br>
+<input id="images" placeholder="Image hashes, comma separated" size="50">
+<button onclick="postL()">Publish</button> <span id="st" class="muted"></span></section>
+<section><h2>Listings</h2><input id="q" placeholder="Search" oninput="load()">
+<select id="fk" onchange="load()"><option value="">All</option><option value="offer">Offers</option><option value="request">Requests</option></select>
+<div id="list"></div></section>
+<section><h2>Deal (Proof of Trust)</h2>
+<input id="did" placeholder="Listing / accept / receipt id" size="40"><input id="buyer" placeholder="Buyer public key" size="40"><br>
+<button onclick="api('accept',{listing_id:v('did'),buyer:v('buyer')})">Seller: accept buyer</button>
+<button onclick="stepD('buyer_paid')">Buyer: paid (off-network)</button>
+<button onclick="stepD('seller_shipped')">Seller: shipped</button>
+<button onclick="stepD('buyer_confirmed')">Buyer: received</button>
+<button onclick="stepD('buyer_disputed')">Buyer: dispute</button>
+<button onclick="api('claim',{accept_id:v('did'),reason:'not delivered'})">Non-delivery claim</button><br>
+<button onclick="api('complete',{listing_id:v('did'),buyer:v('buyer')})">Seller: deal-completed receipt</button>
+<select id="score"><option>5</option><option>4</option><option>3</option><option>2</option><option>1</option></select>
+<button onclick="api('rate',{receipt_id:v('did'),score:+v('score'),comment:''})">Buyer: rate</button>
+<pre id="out" class="muted"></pre></section>
+<script>
+const v=id=>document.getElementById(id).value, $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function api(p,b){$('out').textContent='…';const r=await fetch('/api/'+p,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)});
+ const t=await r.text();$('out').textContent=t;load();return t}
+const stepD=s=>api('step',{accept_id:v('did'),step:s});
+async function postL(){$('st').textContent='Node is computing anti-spam stamp…';
+ const t=await api('post',{kind:v('kind'),title:v('title'),desc:v('desc'),price_hint:v('hint'),category:v('category'),images:v('images').split(',').map(s=>s.trim()).filter(Boolean)});$('st').textContent=t}
+async function load(){const u=new URLSearchParams({q:v('q')});if(v('fk'))u.set('kind',v('fk'));
+ const ls=await (await fetch('/api/listings?'+u)).json();
+ $('list').innerHTML=ls.map(x=>`<div class="card"><b>${esc(x.listing.title)}</b> <span class="muted">[${x.listing.kind}] ${esc(x.listing.category)}</span><br>
+ ${esc(x.listing.desc)}<br><span class="muted">Price hint: ${esc(x.listing.price_hint)} · seller ${x.seller_pseudonym.slice(0,12)} · reputation ${x.rep?x.rep.mean.toFixed(2)+' ('+x.rep.count+')':'—'}</span><br>
+ <code class="muted" onclick="$('did').value='${x.id}'">${x.id}</code></div>`).join('')||'<p class="muted">No listings yet</p>'}
+fetch('/api/whoami').then(r=>r.json()).then(j=>$('me').textContent=j.pseudonym+' / '+j.pubkey);
+const ws=new WebSocket((location.protocol=='https:'?'wss://':'ws://')+location.host+'/ws');ws.onmessage=load;load();
+</script></body></html>

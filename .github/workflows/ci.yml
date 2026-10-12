@@ -9,3 +9,4 @@ jobs:
       - name: No token / mining / payment logic in live code
         run: ./scripts/check_no_token.sh
       - run: cargo test --workspace --locked
+      - run: ./scripts/e2e.sh
