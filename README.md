@@ -1,57 +1,45 @@
 # Last-change
 
-**بازار همتابه‌همتا و ناشناس، بدون واسطه، با اعتماد قابل اثبات.**
+**A pseudonymous peer-to-peer marketplace with no middleman and provable trust.**
 
-> بیت‌کوین شخص ثالث را از پول حذف کرد. Last-change آن را از خرید و فروش حذف می‌کند.
+> Bitcoin removed the third party from money. Last-change removes it from buying and selling.
 
-> ### ⚖️ هشدار حقوقی / Legal
-> - این نرم‌افزار **توکن، رمزارز، پرداخت، اسکرو و نگهداری پول ندارد**. پول و کالا خارج از نرم‌افزار و مستقیم بین دو طرف جابه‌جا می‌شود.
-> - افزودن توکن، پاداش استخراج، نگهداری دارایی یا سرویس سواپ ممکن است در آلمان و اتحادیه‌ی اروپا فعالیت مجوزدار باشد (**BaFin، KWG، MiCA**). مقررات ضدپول‌شویی اتحادیه‌ی اروپا (**EU AMLR 2024/1624**) هم از **ژوئیه‌ی ۲۰۲۷** ارائه‌دهندگان خدمات رمزارزی را از کار با رمزارزهای افزایندهٔ ناشناسی و حساب‌های ناشناس منع می‌کند. پیش از هر پیاده‌سازی باید از وکیل آلمانی مشاوره گرفت.
-> - **خرید و فروش کالا و خدمات غیرقانونی ممنوع است.** ناشناس بودن کسی را از قانون معاف نمی‌کند ([TERMS.md](TERMS.md)).
-> - CI با [`scripts/check_no_token.sh`](scripts/check_no_token.sh) تضمین می‌کند که هیچ منطق توکن، استخراج یا پرداختی وارد کد نشود.
+> ### ⚖️ Legal notice
+> - This software has **no token, no cryptocurrency, no payments, no escrow and never holds funds.** Money and goods change hands directly between the parties, outside the software.
+> - Adding a token, mining rewards, custody or a swap service could be a licensed activity in Germany/EU (**BaFin, KWG, MiCA**). The **EU AML Regulation (2024/1624)**, from **July 2027**, also bars crypto-asset service providers from handling anonymity-enhancing coins and anonymous accounts. Get German legal counsel before implementing any of that.
+> - **Illegal goods and services are forbidden.** Pseudonymity does not exempt anyone from the law ([TERMS.md](TERMS.md)). Some categories (CSAM / anything endangering minors, weapons and explosives, hard drugs, human trafficking) are permanently banned at code level.
+> - CI ([`scripts/check_no_token.sh`](scripts/check_no_token.sh)) ensures that no token, mining or payment logic enters the live code.
 
-## ویژگی‌ها (پیاده‌سازی‌شده)
-- **ناشناس و همتابه‌همتا:** هویت فقط یک جفت‌کلید است که روی دستگاه خودتان ساخته می‌شود. نام، ایمیل، تلفن، KYC و پروفایلی وجود ندارد. شبکه با libp2p کار می‌کند (gossipsub، Kademlia و رمزنگاری Noise)، و کلید شبکه جدا از هویت شماست.
-- **عرضه و تقاضا:** آگهی کالا، خدمات، و **آثار هنری و نقاشی** (`category=art`) با لینک هش تصاویر. خود تصاویر روی دفتر ذخیره نمی‌شوند.
-- **Proof of Trust:** چرخهٔ امضاشدهٔ معامله: پذیرش، «پرداخت شد»، «ارسال شد»، و در آخر تأیید یا اعتراض. اگر فروشنده خریدار را پذیرفته ولی تا مهلت مقرر (پیش‌فرض ۱۴ روز) «ارسال شد» را ثبت نکرده باشد، ادعای عدم تحویل خریدار به او **یک اخطار** می‌دهد. سیاست پیش‌فرض **یک‌اخطاره** است (و قابل تنظیم): آگهی‌های فروشنده نزد گره‌های درستکار پنهان و اعتبارش صفر می‌شود. ادعای دروغ وزن اعتبار خود مدعی را نصف می‌کند، و هر ادعا به مهر ضد اسپم ۱۶ برابر سنگین‌تری نیاز دارد.
-- **اعتبار ضد جعل:** امتیاز دادن فقط وقتی ممکن است که فروشنده رسید «پایان معامله» را امضا کرده باشد. وزن هر امتیاز به اعتبار امتیازدهنده بستگی دارد و با گذر زمان کم می‌شود.
-- **ضد Sybil و اسپم:** هر پیام به یک مهر کار کوچک نیاز دارد که با **circuit-pow** ساخته می‌شود: از هر seed یک مدار تصادفی محدود ساخته می‌شود (با عملیات صحیح، شاخه‌ها و حافظهٔ scratchpad)، و خروجی‌اش از زنجیرهٔ چندهشی SHA-256، SHA-512، SHA3-256 و BLAKE3 می‌گذرد که ترتیبشان با seed عوض می‌شود. این طراحی در برابر ASIC مقاوم است. سختی با LWMA تنظیم می‌شود. این **استخراج نیست** و هیچ ارزشی تولید نمی‌کند.
-- **فیلتر محتوا، فهرست مسدودی و گزارش:** فیلتر محلی، مسدودسازی کلید، شناسهٔ مستعار یا آگهی، و پخش گزارش‌ها در شبکه.
-- **API محلی و وب‌اپ:** HTTP/JSON و WebSocket با axum، و یک وب‌اپ فارسی برای ثبت آگهی، مرور، معامله و امتیاز.
+## Features (implemented)
+- **Pseudonymous P2P:** your identity is a keypair generated on your device. There is no name, email, phone, KYC or profile. Networking runs on libp2p (gossipsub, Kademlia, Noise), and the network key is kept separate from your identity.
+- **Offers and requests:** goods, services, and **artworks/paintings** (`category=art`) with image content-hash links. Images stay off the ledger.
+- **Proof of Trust:** a signed deal lifecycle: accept, paid (off-network), shipped, and then confirmed or disputed. If the seller accepted but posted no "shipped" within the timeout (14 days by default), the buyer's non-delivery claim gives the seller a **strike**. The default is a **one-strike** policy (configurable): honest peers hide that seller's listings and zero their reputation. A false claim halves the claimer's own rating weight, and every claim needs a 16× harder anti-spam stamp.
+- **Fake-review-resistant reputation:** you can rate only with a seller-signed "deal completed" receipt. Ratings are weighted by the rater's reputation and decay over time.
+- **Anti-Sybil / anti-spam:** every message carries a small work stamp from **circuit-pow**. A seed generates a bounded random circuit (integer ops, branches, a scratchpad), and its output goes through a SHA-256/SHA-512/SHA3-256/BLAKE3 chain whose order is permuted per seed. The design is ASIC-resistant and uses LWMA retargeting. This is **not mining** and creates no value.
+- **Moderation:** a local filter with a non-relaxable hard floor, blocklists (key, pseudonym or entry) and gossiped reports.
+- **Local API + web app:** HTTP/JSON + WebSocket (axum), and a mobile-friendly web app for posting, browsing, deals and ratings.
 
-## نقشهٔ راه (هنوز پیاده‌سازی نشده)
-- 🔜 امضای پساکوانتومی (ML-DSA) و کانال رمزشدهٔ ML-KEM برای پیام‌های معامله
-- 🔜 لایهٔ ZK (STARK) برای امتیازدهی ناشناس
-- 🔜 اپ اندروید (هستهٔ Rust) و فرانت‌اند web3 که با کلید خود کاربر امضا می‌کند
-- 🚫 **توکن EST «اعتیادزدایی جامع»:** اختیاری، استخراجی، با کیف پول پساکوانتومی. **فقط طرح است و پیاده‌سازی نشده** ([docs/FUTURE_POW_TOKEN.md](docs/FUTURE_POW_TOKEN.md)).
-- 🚫 **سواپ اتمی Monero و دارایی‌های حذف‌شده از صرافی‌ها:** **فقط طرح است و پیاده‌سازی نشده.** پیش از هر قدمی بررسی حقوقی لازم است.
+## Roadmap (not implemented yet)
+- 🔜 Post-quantum signatures (ML-DSA) and an ML-KEM channel for deal messages
+- 🔜 A ZK layer (STARK) for anonymous ratings and governance votes
+- 🔜 An Android app (Rust core via uniffi) and a web3 front end that signs with the user's own key ([docs/CLIENTS.md](docs/CLIENTS.md))
+- 🚫 **EST token:** an optional mined test unit. **Design only, not implemented, no value** ([docs/FUTURE_POW_TOKEN.md](docs/FUTURE_POW_TOKEN.md)).
+- 🚫 **Monero / delisted-asset atomic swaps:** **design only, not implemented.** They need legal review first.
 
-## شروع سریع
+## Quick start
 ```sh
 cargo build --release && B=target/release/lastchange
 $B keygen
-$B post offer --title "نقاشی رنگ‌روغن" --category art --image <content-hash>
-$B serve --http 127.0.0.1:8080          # وب‌اپ: http://127.0.0.1:8080
-# گره دوم روی همین کامپیوتر:
+$B post offer --title "Oil painting" --category art --image <content-hash>
+$B serve --http 127.0.0.1:8080             # web app at http://127.0.0.1:8080
 $B --dir node2 keygen && $B --dir node2 serve --http 127.0.0.1:8081 --dial /ip4/127.0.0.1/tcp/<port>
-./scripts/e2e.sh                         # دمو و تست کامل دوگره‌ای
-cargo test --workspace                   # همهٔ تست‌ها
+./scripts/e2e.sh                            # full two-node demo/test
+cargo test --workspace
 ```
-فرمان‌های CLI: `keygen whoami post list search accept step claim complete-deal rate trust report block status peers serve`
+CLI: `keygen whoami post list search accept step claim complete-deal rate trust report block status peers serve`
 
-## ساختار
-`crates/circuit-pow` (مهر کار) · `core` (انواع و امضا) · `ledger` (دفتر SQLite با ریشهٔ Merkle) · `reputation` (اعتبار و Proof of Trust) · `net` (libp2p) · `node` (CLI، API و وب‌اپ) · `web/`
+## Layout
+`crates/circuit-pow` (work stamp) · `core` (types, signing, filter) · `ledger` (SQLite + Merkle root) · `reputation` (scores + Proof of Trust) · `net` (libp2p) · `node` (CLI, API, web app) · `web/`
 
-## سازنده
-**Salar Khanbaba (salnorin)**. همچنین ببینید: [MISSION.md](MISSION.md)
-
----
-### English summary
-Last-change is a pseudonymous peer-to-peer classifieds marketplace in Rust. Identities are keys only. It
-offers offers/requests (including art), libp2p gossip, a receipt-gated weighted reputation ledger, a
-**Proof of Trust** deal lifecycle with a one-strike policy, and anti-spam/anti-Sybil stamps from the
-ASIC-resistant `circuit-pow` crate. It also has a content filter, blocklists, gossiped reports, a CLI,
-a local HTTP/WebSocket API and a web app.
-It has **no token, no payments, no custody**. The EST token and Monero/atomic swaps are design-only roadmap
-items and are not implemented. Illegal goods are forbidden, and pseudonymity does not exempt anyone from the law.
-See the BaFin/MiCA and EU AMLR (July 2027) notes above. Author: Salar Khanbaba (salnorin).
+## Author
+**Salar Khanbaba (salnorin)**. See also [MISSION.md](MISSION.md) and [docs/FUTURE.md](docs/FUTURE.md).
