@@ -11,6 +11,8 @@ network, and buyers rate sellers after a deal. There is no central server and no
 > Any such idea lives only in [`docs/FUTURE_POW_TOKEN.md`](docs/FUTURE_POW_TOKEN.md) as a
 > disabled, design-only concept, and requires German legal counsel before any implementation.
 > CI enforces this with [`scripts/check_no_token.sh`](scripts/check_no_token.sh).
+> Note also the **EU AML Regulation (2024/1624)**: from **July 2027**, crypto-asset service providers may
+> not handle anonymity-enhancing coins or anonymous accounts.
 
 > **Anonymity does not exempt anyone from the law.** Illegal goods and services are forbidden.
 > See [TERMS.md](TERMS.md).
@@ -38,6 +40,14 @@ and distributed networks instead of platforms, accounts and profiles.
   Ratings are weighted by the rater's own reputation and decay over time (half-life of 180 days).
 - **P2P network:** libp2p with Noise encryption, gossipsub for propagation and Kademlia for discovery.
   The transport key is ephemeral and kept separate from your marketplace identity.
+- **Proof of Trust:** a signed deal lifecycle. The seller accepts the buyer, the buyer marks
+  "paid" (settled off-network), the seller marks "shipped", and the buyer confirms or disputes. If the seller
+  accepted but posted no "shipped" within the timeout (14 days by default), a buyer's non-delivery **claim** gives the
+  seller a **strike**. The default is a one-strike policy (configurable `strike_limit`): honest peers hide that seller's
+  listings and zero their reputation. Abuse controls: only the accepted buyer can claim, a claim needs a 16× harder
+  stamp, and every invalid claim halves the claimer's own rating weight. Appeals and second-party evidence
+  (for example tracking proofs) are planned for phase 4 and are not automatic yet.
+- **Artworks and goods:** use `--category art` with `--image <content-hash>` links. Images are never stored on the ledger.
 - **Safety:** a local content filter, local blocklists (pseudonym, key or entry) and gossiped report flags.
 
 ## Workspace
@@ -63,6 +73,12 @@ $B peers --listen /ip4/0.0.0.0/tcp/4001 --dial /ip4/1.2.3.4/tcp/4001/p2p/<peer-i
 # seller, after the deal happened off-network:
 $B complete-deal <listing-id> --buyer <buyer-pubkey>
 # buyer:
+# Proof of Trust lifecycle:
+$B accept <listing-id> --buyer <buyer-pubkey>        # seller
+$B step <accept-id> buyer-paid                       # buyer (settled off-network)
+$B step <accept-id> seller-shipped                   # seller
+$B step <accept-id> buyer-confirmed                  # buyer (or buyer-disputed)
+$B claim <accept-id> --reason "never arrived"        # buyer, only after the timeout
 $B rate <receipt-id> --score 5 --comment "as described"
 $B report <entry-id> --reason "illegal item"; $B block <pseudonym>
 ```
@@ -76,6 +92,12 @@ Run the tests with `cargo test --workspace`. They include a two-node libp2p inte
 3. **Privacy transport (docs only for now):** optional Tor or I2P transport, so IP addresses aren't linkable to pseudonyms.
 4. **Hardening:** rate limits per peer, filter lists shared and signed by communities, ledger pruning and snapshots.
 5. **Future, disabled:** the token concept in `docs/FUTURE_POW_TOKEN.md`. It is **not implemented** and is blocked by CI and by legal review.
+
+See also [MISSION.md](MISSION.md).
+
+## Authors
+
+Salar Khanbaba (salnorin)
 
 ## Contributing
 

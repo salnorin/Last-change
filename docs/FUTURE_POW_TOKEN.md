@@ -130,6 +130,4 @@ users.
 - Status: **NOT implemented.** Live code is checked by CI to contain none of this.
 
 ## Authors (نویسندگان)
-- Creator: **Salar Khanbaba (salnorin)**
-- Co-designer:
-<!-- CO_DESIGNER -->
+- **Salar Khanbaba (salnorin)**: creator.

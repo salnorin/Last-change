@@ -24,15 +24,73 @@ pub struct Score {
     pub weight: f64,
     pub count: usize,
     pub reports: usize,
+    /// Proof of Trust strikes (valid non-delivery claims against this seller).
+    pub strikes: usize,
+    /// Invalid claims filed by this identity.
+    pub false_claims: usize,
+    /// Strike limit reached: listings should be hidden, reputation zeroed.
+    pub struck: bool,
 }
 
 pub struct Params {
     pub half_life_secs: f64,
     pub base_weight: f64,
     pub iterations: usize,
+    /// Seller must post SellerShipped within this time after acceptance.
+    pub claim_timeout_secs: u64,
+    /// Strikes before an identity is struck (default 1 = one-strike policy).
+    pub strike_limit: usize,
 }
 impl Default for Params {
-    fn default() -> Self { Self { half_life_secs: 180.0 * 86400.0, base_weight: 0.2, iterations: 3 } }
+    fn default() -> Self { Self { half_life_secs: 180.0 * 86400.0, base_weight: 0.2, iterations: 3,
+        claim_timeout_secs: 14 * 86400, strike_limit: 1 } }
+}
+
+/// Proof of Trust evaluation: returns (strikes per seller, false claims per claimer).
+pub fn trust(items: &[Item], p: &Params) -> (HashMap<String, usize>, HashMap<String, usize>) {
+    use lc_core::Step;
+    let mut listing_author = HashMap::new();
+    let mut accepts = HashMap::new();
+    for it in items {
+        match &it.payload {
+            Payload::Listing(_) => { listing_author.insert(it.id.as_str(), it.author.as_str()); }
+            Payload::DealAccept(a) => { accepts.insert(it.id.as_str(), (it.author.as_str(), a)); }
+            _ => {}
+        }
+    }
+    // valid accepts: seller authored the listing
+    accepts.retain(|_, (seller, a)| listing_author.get(a.listing_id.as_str()) == Some(seller) && a.buyer != *seller);
+    let mut shipped: HashMap<&str, u64> = HashMap::new();
+    let mut confirmed: HashSet<&str> = HashSet::new();
+    for it in items {
+        if let Payload::DealStep(s) = &it.payload {
+            let Some((seller, a)) = accepts.get(s.accept_id.as_str()) else { continue };
+            match s.step {
+                Step::SellerShipped if it.author == *seller => { shipped.entry(s.accept_id.as_str()).or_insert(s.created); }
+                Step::BuyerConfirmed if it.author == a.buyer => { confirmed.insert(s.accept_id.as_str()); }
+                _ => {}
+            }
+        }
+    }
+    let mut strikes: HashMap<String, usize> = HashMap::new();
+    let mut false_claims: HashMap<String, usize> = HashMap::new();
+    let mut used = HashSet::new();
+    for it in items {
+        let Payload::Claim(c) = &it.payload else { continue };
+        let valid = match accepts.get(c.accept_id.as_str()) {
+            Some((seller, a)) => {
+                let deadline = a.created + p.claim_timeout_secs;
+                let shipped_in_time = shipped.get(c.accept_id.as_str()).is_some_and(|t| *t <= deadline);
+                if a.buyer == it.author && c.created >= deadline && !shipped_in_time && !confirmed.contains(c.accept_id.as_str()) {
+                    if used.insert(c.accept_id.clone()) { *strikes.entry(seller.to_string()).or_default() += 1; }
+                    true
+                } else { false }
+            }
+            None => false,
+        };
+        if !valid { *false_claims.entry(it.author.clone()).or_default() += 1; }
+    }
+    (strikes, false_claims)
 }
 
 struct Valid { rater: String, seller: String, score: f64, time: u64 }
@@ -65,6 +123,7 @@ fn valid_ratings(items: &[Item]) -> Vec<Valid> {
 }
 
 pub fn compute(items: &[Item], now: u64, p: &Params) -> HashMap<String, Score> {
+    let (strikes, false_claims) = trust(items, p);
     let valid = valid_ratings(items);
     let mut reports: HashMap<String, usize> = HashMap::new();
     let by_id: HashMap<&str, &str> = items.iter().map(|i| (i.id.as_str(), i.author.as_str())).collect();
@@ -81,15 +140,25 @@ pub fn compute(items: &[Item], now: u64, p: &Params) -> HashMap<String, Score> {
             let age = now.saturating_sub(v.time) as f64;
             let decay = 0.5f64.powf(age / p.half_life_secs);
             // rater weight: base + bounded function of their own reputation
-            let rw = scores.get(&v.rater).map(|s| p.base_weight + (s.weight.min(10.0) / 10.0) * (s.mean / 5.0)).unwrap_or(p.base_weight);
+            let fc = *false_claims.get(&v.rater).unwrap_or(&0) as i32;
+            let rw = 0.5f64.powi(fc) * scores.get(&v.rater).map(|s| p.base_weight + (s.weight.min(10.0) / 10.0) * (s.mean / 5.0)).unwrap_or(p.base_weight);
             let w = rw * decay;
             let e = acc.entry(v.seller.clone()).or_default();
             e.0 += w * v.score; e.1 += w; e.2 += 1;
         }
         scores = acc.into_iter().map(|(k, (s, w, c))| (k.clone(), Score {
-            mean: if w > 0.0 { s / w } else { 0.0 }, weight: w, count: c, reports: *reports.get(&k).unwrap_or(&0) })).collect();
+            mean: if w > 0.0 { s / w } else { 0.0 }, weight: w, count: c, reports: *reports.get(&k).unwrap_or(&0),
+            strikes: 0, false_claims: 0, struck: false })).collect();
     }
-    for (k, r) in reports { scores.entry(k).or_insert(Score { mean: 0.0, weight: 0.0, count: 0, reports: r }); }
+    let empty = Score { mean: 0.0, weight: 0.0, count: 0, reports: 0, strikes: 0, false_claims: 0, struck: false };
+    for (k, r) in reports { scores.entry(k).or_insert(Score { reports: r, ..empty }); }
+    for k in strikes.keys().chain(false_claims.keys()) { scores.entry(k.clone()).or_insert(empty); }
+    for (k, sc) in scores.iter_mut() {
+        sc.strikes = *strikes.get(k).unwrap_or(&0);
+        sc.false_claims = *false_claims.get(k).unwrap_or(&0);
+        sc.weight *= 0.5f64.powi(sc.false_claims as i32);
+        if sc.strikes >= p.strike_limit.max(1) { sc.struck = true; sc.mean = 0.0; sc.weight = 0.0; }
+    }
     scores
 }
 
@@ -122,6 +191,41 @@ mod tests {
         assert!(compute(&items, 0, &Params::default()).get("S").is_none());
         let items = vec![item("L", "S", listing(), 0), item("C", "S", rcpt("S"), 0), item("R", "S", rating("S", "C", 5), 0)];
         assert!(compute(&items, 0, &Params::default()).get("S").is_none());
+    }
+    fn accept(buyer: &str, t: u64) -> Payload { Payload::DealAccept(DealAccept { listing_id: "L".into(), buyer: buyer.into(), created: t }) }
+    fn step(st: Step, t: u64) -> Payload { Payload::DealStep(DealStep { accept_id: "A".into(), step: st, created: t }) }
+    fn claim(t: u64) -> Payload { Payload::Claim(Claim { accept_id: "A".into(), reason: "".into(), created: t }) }
+
+    #[test]
+    fn non_delivery_claim_strikes_seller() {
+        let p = Params::default(); let late = p.claim_timeout_secs + 1;
+        let items = vec![item("L", "S", listing(), 0), item("A", "S", accept("B", 0), 0),
+            item("P", "B", step(Step::BuyerPaid, 1), 1), item("K", "B", claim(late), late)];
+        let s = compute(&items, late, &p)["S"];
+        assert_eq!(s.strikes, 1); assert!(s.struck); assert_eq!(s.weight, 0.0);
+    }
+    #[test]
+    fn early_or_false_claim_hurts_claimer() {
+        let p = Params::default(); let late = p.claim_timeout_secs + 1;
+        // too early
+        let items = vec![item("L", "S", listing(), 0), item("A", "S", accept("B", 0), 0), item("K", "B", claim(5), 5)];
+        let r = compute(&items, 5, &p);
+        assert!(r.get("S").map_or(true, |s| !s.struck)); assert_eq!(r["B"].false_claims, 1);
+        // seller shipped in time
+        let items = vec![item("L", "S", listing(), 0), item("A", "S", accept("B", 0), 0),
+            item("H", "S", step(Step::SellerShipped, 10), 10), item("K", "B", claim(late), late)];
+        let r = compute(&items, late, &p);
+        assert!(r.get("S").map_or(true, |s| !s.struck)); assert_eq!(r["B"].false_claims, 1);
+        // stranger claims
+        let items = vec![item("L", "S", listing(), 0), item("A", "S", accept("B", 0), 0), item("K", "X", claim(late), late)];
+        assert_eq!(compute(&items, late, &p)["X"].false_claims, 1);
+    }
+    #[test]
+    fn strike_limit_configurable() {
+        let p = Params { strike_limit: 2, ..Default::default() }; let late = p.claim_timeout_secs + 1;
+        let items = vec![item("L", "S", listing(), 0), item("A", "S", accept("B", 0), 0), item("K", "B", claim(late), late)];
+        let s = compute(&items, late, &p)["S"];
+        assert_eq!(s.strikes, 1); assert!(!s.struck);
     }
     #[test]
     fn decay_reduces_weight() {

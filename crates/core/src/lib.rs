@@ -52,6 +52,7 @@ impl Identity {
     }
     /// Sign a payload, mining a small anti-spam stamp first.
     pub fn seal(&self, payload: &Payload, stamp_bits: u32) -> Envelope {
+        let stamp_bits = if matches!(payload, Payload::Claim(_)) { stamp_bits + CLAIM_EXTRA_BITS } else { stamp_bits };
         let body = serde_json::to_string(payload).expect("serialize");
         let author = self.public_hex();
         let nonce = find_stamp(&author, &body, stamp_bits);
@@ -105,6 +106,46 @@ pub struct Rating {
     pub comment: String,
 }
 
+/// Proof of Trust, step 1: signed by the SELLER, accepting `buyer` for a listing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DealAccept {
+    pub listing_id: String,
+    pub buyer: String,
+    pub created: u64,
+}
+
+/// Proof of Trust lifecycle steps (all value transfer happens off-network).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Step {
+    /// Buyer states they settled off-network.
+    BuyerPaid,
+    /// Seller states the item was handed over / shipped.
+    SellerShipped,
+    /// Buyer confirms receipt.
+    BuyerConfirmed,
+    /// Buyer disputes.
+    BuyerDisputed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DealStep {
+    pub accept_id: String,
+    pub step: Step,
+    pub created: u64,
+}
+
+/// Buyer claims non-delivery for an accepted deal. Needs a stronger stamp.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Claim {
+    pub accept_id: String,
+    pub reason: String,
+    pub created: u64,
+}
+
+/// Extra stamp bits required for a Claim on top of the node minimum.
+pub const CLAIM_EXTRA_BITS: u32 = 4;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Report {
     pub target_id: String,
@@ -118,6 +159,9 @@ pub enum Payload {
     DealReceipt(DealReceipt),
     Rating(Rating),
     Report(Report),
+    DealAccept(DealAccept),
+    DealStep(DealStep),
+    Claim(Claim),
 }
 
 impl Payload {
@@ -137,7 +181,8 @@ impl Payload {
                 if r.comment.len() > 1000 { return bad("comment too long"); }
             }
             Payload::Report(r) => if r.reason.len() > 500 { return bad("reason too long"); },
-            Payload::DealReceipt(_) => {}
+            Payload::Claim(c) => if c.reason.len() > 500 { return bad("reason too long"); },
+            Payload::DealReceipt(_) | Payload::DealAccept(_) | Payload::DealStep(_) => {}
         }
         Ok(())
     }
@@ -192,6 +237,9 @@ impl Envelope {
             return Err(CoreError::WeakStamp);
         }
         let p = self.payload()?;
+        if matches!(p, Payload::Claim(_)) && stamp_bits(&self.author, &self.body, self.nonce) < min_stamp_bits + CLAIM_EXTRA_BITS {
+            return Err(CoreError::WeakStamp);
+        }
         p.validate()?;
         Ok(p)
     }
@@ -231,6 +279,14 @@ mod tests {
         let mut l = listing();
         if let Payload::Listing(ref mut x) = l { x.title = "cheap firearms".into(); }
         assert!(l.validate().is_err());
+    }
+    #[test]
+    fn claim_needs_stronger_stamp() {
+        let id = Identity::generate();
+        let c = Payload::Claim(Claim { accept_id: "a".into(), reason: "never arrived".into(), created: 0 });
+        let e = id.seal(&c, 6);
+        assert!(e.verify(6).is_ok());
+        assert!(stamp_bits(&e.author, &e.body, e.nonce) >= 10);
     }
     #[test]
     fn key_roundtrip() {

@@ -43,6 +43,14 @@ enum Cmd {
     CompleteDeal { listing_id: String, #[arg(long)] buyer: String },
     /// Buyer: rate a seller after receiving, referencing the seller's receipt.
     Rate { receipt_id: String, #[arg(long)] score: u8, #[arg(long, default_value = "")] comment: String },
+    /// Seller: accept a buyer for a listing (Proof of Trust step 1).
+    Accept { listing_id: String, #[arg(long)] buyer: String },
+    /// Record a lifecycle step: buyer-paid | seller-shipped | buyer-confirmed | buyer-disputed.
+    Step { accept_id: String, #[arg(value_parser = ["buyer-paid", "seller-shipped", "buyer-confirmed", "buyer-disputed"])] step: String },
+    /// Buyer: non-delivery claim after the timeout (costs a stronger stamp; false claims hurt you).
+    Claim { accept_id: String, #[arg(long, default_value = "not delivered")] reason: String },
+    /// Show trust status (score, strikes, false claims) of a pubkey.
+    Trust { pubkey: String },
     /// Flag a listing or author for others (gossiped).
     Report { target_id: String, #[arg(long)] reason: String },
     /// Locally block a pseudonym, pubkey or entry id.
@@ -66,7 +74,8 @@ fn load_id(dir: &std::path::Path) -> Result<Identity> {
 
 fn items(led: &Ledger) -> Result<Vec<lc_reputation::Item>> {
     Ok(led.all()?.into_iter().map(|e| {
-        let time = match &e.payload { Payload::Listing(l) => l.created, _ => now() };
+        let time = match &e.payload { Payload::Listing(l) => l.created, Payload::DealAccept(a) => a.created,
+            Payload::DealStep(s) => s.created, Payload::Claim(c) => c.created, _ => now() };
         lc_reputation::Item { id: e.id, author: e.env.author, payload: e.payload, time }
     }).collect())
 }
@@ -76,6 +85,7 @@ fn print_listings(led: &Ledger, f: impl Fn(&Listing) -> bool) -> Result<()> {
     let rep = lc_reputation::compute(&it, now(), &Default::default());
     for i in &it {
         if let Payload::Listing(l) = &i.payload {
+            if rep.get(&i.author).is_some_and(|s| s.struck) { continue; } // Proof of Trust: hide struck sellers
             if l.expiry < now() || !f(l) || led.is_blocked(&i.author)? || led.is_blocked(&pseudonym_of(&i.author))? { continue; }
             let r = rep.get(&i.author);
             println!("{} [{:?}] {} | {} | hint: {} | seller {} rep {:.2} ({} ratings, {} reports)",
@@ -128,6 +138,25 @@ async fn main() -> Result<()> {
             let Payload::DealReceipt(d) = &r.payload else { bail!("not a deal receipt") };
             if d.buyer != load_id(&cli.dir)?.public_hex() { bail!("this receipt names a different buyer"); }
             seal_add(Payload::Rating(Rating { listing_id: d.listing_id.clone(), seller: r.env.author.clone(), receipt_id: r.id.clone(), score, comment }))?;
+        }
+        Cmd::Accept { listing_id, buyer } => {
+            let e = resolve(&led, &listing_id)?;
+            if e.env.author != load_id(&cli.dir)?.public_hex() { bail!("only the seller can accept a buyer"); }
+            seal_add(Payload::DealAccept(DealAccept { listing_id: e.id, buyer, created: now() }))?;
+        }
+        Cmd::Step { accept_id, step } => {
+            let a = resolve(&led, &accept_id)?;
+            let step = match step.as_str() { "buyer-paid" => Step::BuyerPaid, "seller-shipped" => Step::SellerShipped,
+                "buyer-confirmed" => Step::BuyerConfirmed, _ => Step::BuyerDisputed };
+            seal_add(Payload::DealStep(DealStep { accept_id: a.id, step, created: now() }))?;
+        }
+        Cmd::Claim { accept_id, reason } => {
+            let a = resolve(&led, &accept_id)?;
+            seal_add(Payload::Claim(Claim { accept_id: a.id, reason, created: now() }))?;
+        }
+        Cmd::Trust { pubkey } => {
+            let rep = lc_reputation::compute(&items(&led)?, now(), &Default::default());
+            println!("{:?}", rep.get(&pubkey));
         }
         Cmd::Report { target_id, reason } => { seal_add(Payload::Report(Report { target_id, reason }))?; }
         Cmd::Block { key } => { led.block(&key)?; println!("blocked {key}"); }

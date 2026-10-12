@@ -54,7 +54,8 @@ impl Ledger {
             return Err(LedgerError::Blocked);
         }
         let kind = match p { Payload::Listing(_) => "listing", Payload::DealReceipt(_) => "receipt",
-            Payload::Rating(_) => "rating", Payload::Report(_) => "report" };
+            Payload::Rating(_) => "rating", Payload::Report(_) => "report",
+            Payload::DealAccept(_) => "accept", Payload::DealStep(_) => "step", Payload::Claim(_) => "claim" };
         let n = self.db.execute("INSERT OR IGNORE INTO entries(id,author,kind,env) VALUES(?1,?2,?3,?4)",
             params![id, env.author, kind, serde_json::to_string(env)?])?;
         Ok(n == 1)
