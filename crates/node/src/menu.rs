@@ -133,7 +133,7 @@ pub fn run(dir: &Path, lang: &str) -> Result<()> {
 }
 
 fn num(s: &str) -> Option<f64> {
-    let s = digits(s).replace('٫', ".").replace(',', ".");
+    let s = digits(s).replace(['٫', ','], ".");
     if s.is_empty() {
         Some(0.0)
     } else {

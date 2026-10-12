@@ -204,9 +204,9 @@ mod tests {
     #[test]
     fn fees_counted() {
         let j = Journal::memory().unwrap();
-        j.add(1, Side::Buy, "BTC", 2.0, 10.0, 2.0, "").unwrap(); // unit cost 11
-        j.add(2, Side::Sell, "BTC", 2.0, 12.0, 1.0, "").unwrap(); // 24 - 1 - 22 = 1
-        let p = &j.positions().unwrap()["BTC"];
+        j.add(1, Side::Buy, "XAU", 2.0, 10.0, 2.0, "").unwrap(); // unit cost 11
+        j.add(2, Side::Sell, "XAU", 2.0, 12.0, 1.0, "").unwrap(); // 24 - 1 - 22 = 1
+        let p = &j.positions().unwrap()["XAU"];
         assert!(close(p.realized, 1.0));
         assert!(close(p.qty, 0.0));
     }
