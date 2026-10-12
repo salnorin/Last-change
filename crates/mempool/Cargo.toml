@@ -1,0 +1,16 @@
+[package]
+name = "lastchange-mempool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Mempool + entry validation for signed Last-change chain entries (records only, no value)."
+[lib]
+name = "lc_mempool"
+[dependencies]
+lc-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
