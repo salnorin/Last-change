@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 pub mod channel;
 pub mod filter;
+pub mod hd;
 pub mod keystore;
 
 /// Default anti-spam stamp difficulty (leading zero bits).
@@ -56,6 +57,19 @@ pub struct Identity {
     pq: ml_dsa::SigningKey<MlDsa65>,
 }
 
+impl Drop for Identity {
+    fn drop(&mut self) {
+        // SigningKey types zeroize themselves; wipe our copy of the master seed.
+        zeroize::Zeroize::zeroize(&mut self.master);
+    }
+}
+
+/// Constant-time string equality (for secrets / confirmations).
+pub fn ct_eq(a: &str, b: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    a.len() == b.len() && bool::from(a.as_bytes().ct_eq(b.as_bytes()))
+}
+
 impl Identity {
     pub fn generate() -> Self {
         let mut m = [0u8; 32];
@@ -63,9 +77,12 @@ impl Identity {
         Self::from_master(&m)
     }
     pub fn from_master(m: &[u8; 32]) -> Self {
-        let ed = SigningKey::from_bytes(&derive(m, "ed25519"));
-        let seed = derive(m, "ml-dsa-65");
+        let mut eds = derive(m, "ed25519");
+        let ed = SigningKey::from_bytes(&eds);
+        let mut seed = derive(m, "ml-dsa-65");
         let pq = ml_dsa::SigningKey::<MlDsa65>::from_seed(&seed.into());
+        zeroize::Zeroize::zeroize(&mut eds);
+        zeroize::Zeroize::zeroize(&mut seed);
         Self { master: *m, ed, pq }
     }
     /// Generate a new BIP39 mnemonic (12 or 24 English words) and its identity.
@@ -81,10 +98,10 @@ impl Identity {
     pub fn from_mnemonic(words: &str) -> Result<Self, CoreError> {
         let m = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, words.trim())
             .map_err(|e| CoreError::Crypto(format!("invalid mnemonic: {e}")))?;
-        let seed = m.to_seed("");
-        let mut master = [0u8; 32];
-        hkdf::Hkdf::<Sha256>::new(Some(b"lastchange-bip39-v1"), &seed)
-            .expand(b"master", &mut master)
+        let seed = zeroize::Zeroizing::new(m.to_seed(""));
+        let mut master = zeroize::Zeroizing::new([0u8; 32]);
+        hkdf::Hkdf::<Sha256>::new(Some(b"lastchange-bip39-v1"), seed.as_ref())
+            .expand(b"master", master.as_mut())
             .expect("hkdf");
         Ok(Self::from_master(&master))
     }
@@ -541,5 +558,29 @@ mod tests {
         let b = Identity::from_master(&a.master_bytes());
         assert_eq!(a.public_hex(), b.public_hex());
         assert_eq!(a.pq_public_hex(), b.pq_public_hex());
+    }
+}
+
+#[cfg(test)]
+mod bip39_tests {
+    use super::*;
+    #[test]
+    fn bip39_checksum_enforced() {
+        let (w, id) = Identity::generate_mnemonic(12).unwrap();
+        assert_eq!(
+            Identity::from_mnemonic(&w).unwrap().pseudonym(),
+            id.pseudonym()
+        );
+        // 12 x "abandon" has a wrong checksum; "... about" is the valid one.
+        let bad = ["abandon"; 12].join(" ");
+        assert!(Identity::from_mnemonic(&bad).is_err());
+        let good = format!("{} about", ["abandon"; 11].join(" "));
+        assert!(Identity::from_mnemonic(&good).is_ok());
+    }
+    #[test]
+    fn ct_eq_works() {
+        assert!(ct_eq("abcd", "abcd"));
+        assert!(!ct_eq("abcd", "abce"));
+        assert!(!ct_eq("abc", "abcd"));
     }
 }

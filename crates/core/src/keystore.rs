@@ -57,8 +57,8 @@ impl Keystore {
         let mut nonce = [0u8; 24];
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut salt);
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
-        let key = kdf(pass, &salt, m, t, p)?;
-        let ct = XChaCha20Poly1305::new(&key.into())
+        let key = zeroize::Zeroizing::new(kdf(pass, &salt, m, t, p)?);
+        let ct = XChaCha20Poly1305::new(&(*key).into())
             .encrypt(XNonce::from_slice(&nonce), id.master_bytes().as_slice())
             .map_err(|_| CoreError::Crypto("encrypt".into()))?;
         Ok(Self {
@@ -81,14 +81,21 @@ impl Keystore {
         if nonce.len() != 24 {
             return Err(bad());
         }
-        let key = kdf(pass, &salt, self.m_cost_kib, self.t_cost, self.p_cost)?;
-        let pt = XChaCha20Poly1305::new(&key.into())
-            .decrypt(
-                XNonce::from_slice(&nonce),
-                hex::decode(&self.ciphertext).map_err(|_| bad())?.as_slice(),
-            )
-            .map_err(|_| bad())?;
-        let m: [u8; 32] = pt.try_into().map_err(|_| bad())?;
+        let key =
+            zeroize::Zeroizing::new(kdf(pass, &salt, self.m_cost_kib, self.t_cost, self.p_cost)?);
+        let pt = zeroize::Zeroizing::new(
+            XChaCha20Poly1305::new(&(*key).into())
+                .decrypt(
+                    XNonce::from_slice(&nonce),
+                    hex::decode(&self.ciphertext).map_err(|_| bad())?.as_slice(),
+                )
+                .map_err(|_| bad())?,
+        );
+        let mut m = zeroize::Zeroizing::new([0u8; 32]);
+        if pt.len() != 32 {
+            return Err(bad());
+        }
+        m.copy_from_slice(&pt);
         Ok(Identity::from_master(&m))
     }
 }

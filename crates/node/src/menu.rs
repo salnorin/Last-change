@@ -217,7 +217,7 @@ fn delete_flow(dir: &Path, lang: &str, json: bool, input: &mut impl BufRead) -> 
     let Some(a) = ask(lang, "del_q", input)? else {
         return Ok(false);
     };
-    if a.trim().to_lowercase() != code.to_lowercase() {
+    if !lc_core::ct_eq(&a.trim().to_lowercase(), &code.to_lowercase()) {
         println!("{}", t(lang, "del_cancel"));
         return Ok(false);
     }

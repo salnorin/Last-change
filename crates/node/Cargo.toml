@@ -22,6 +22,7 @@ axum= { workspace = true, optional = true }
 futures= { workspace = true, optional = true }
 serde.workspace = true
 rpassword = "7"
+zeroize = "1"
 tower-http = { version = "0.5", features = ["fs"], optional = true }
 lc-chain.workspace = true
 

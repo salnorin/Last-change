@@ -166,15 +166,45 @@ pub(crate) fn now() -> u64 {
         .as_secs()
 }
 
-/// Passphrase from LASTCHANGE_PASSPHRASE or a hidden prompt (rpassword; works in Termux).
-/// `confirm` asks twice. Empty or short passphrases are rejected by the keystore (min 8).
-fn passphrase(confirm: bool) -> Result<String> {
-    if let Ok(p) = std::env::var("LASTCHANGE_PASSPHRASE") {
-        return Ok(p);
+/// Minimum-strength check for NEW passphrases: >= 12 chars, >= 2 character classes
+/// (or >= 20 chars, e.g. a multi-word phrase), not a trivial repeat. Heuristic, not a guarantee.
+pub(crate) fn passphrase_ok(p: &str) -> Result<()> {
+    let n = p.chars().count();
+    let classes = [
+        p.chars().any(|c| c.is_lowercase()),
+        p.chars().any(|c| c.is_uppercase()),
+        p.chars().any(|c| c.is_numeric()),
+        p.chars().any(|c| !c.is_alphanumeric()),
+    ]
+    .iter()
+    .filter(|b| **b)
+    .count();
+    let distinct = p.chars().collect::<std::collections::HashSet<_>>().len();
+    if n < 12 || distinct < 5 || (classes < 2 && n < 20) {
+        bail!("passphrase too weak: use at least 12 characters with letters plus digits or symbols (or a phrase of 20+ characters)");
     }
-    let p = rpassword::prompt_password("Keystore passphrase: ")?;
-    if confirm && rpassword::prompt_password("Repeat passphrase: ")? != p {
-        bail!("passphrases differ");
+    Ok(())
+}
+
+/// Passphrase from LASTCHANGE_PASSPHRASE or a hidden prompt (rpassword; works in Termux).
+/// `confirm` (new passphrase) asks twice and enforces [`passphrase_ok`]. Held in zeroizing memory;
+/// nothing is cached: every command that needs the key asks again (auto-lock by design).
+fn passphrase(confirm: bool) -> Result<zeroize::Zeroizing<String>> {
+    let p = match std::env::var("LASTCHANGE_PASSPHRASE") {
+        Ok(p) => zeroize::Zeroizing::new(p),
+        Err(_) => {
+            let p = zeroize::Zeroizing::new(rpassword::prompt_password("Keystore passphrase: ")?);
+            if confirm {
+                let r = zeroize::Zeroizing::new(rpassword::prompt_password("Repeat passphrase: ")?);
+                if !lc_core::ct_eq(&p, &r) {
+                    bail!("passphrases differ");
+                }
+            }
+            p
+        }
+    };
+    if confirm {
+        passphrase_ok(&p)?;
     }
     Ok(p)
 }
@@ -787,6 +817,15 @@ mod wallet_tests {
         ));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn passphrase_strength() {
+        assert!(passphrase_ok("short1!").is_err());
+        assert!(passphrase_ok("aaaaaaaaaaaaaaaa").is_err());
+        assert!(passphrase_ok("onlylowercaseabc").is_err());
+        assert!(passphrase_ok("test-passphrase-123").is_ok());
+        assert!(passphrase_ok("correct horse battery staple").is_ok());
     }
 
     #[test]
