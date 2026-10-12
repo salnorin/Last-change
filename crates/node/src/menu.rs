@@ -14,7 +14,19 @@ const T: &[(&str, &str, &str)] = &[
     ("m2", "2) Restore from words", "۲) بازیابی با کلمات"),
     ("m3", "3) Show wallet info", "۳) نمایش اطلاعات کیف پول"),
     ("m4", "4) Exit", "۴) خروج"),
-    ("choose", "Choose (1-4): ", "انتخاب کنید (۱ تا ۴): "),
+    ("m5", "5) Paper trade journal / P&L", "۵) ثبت معامله کاغذی / دیدن سود و ضرر"),
+    ("choose", "Choose (1-5): ", "انتخاب کنید (۱ تا ۵): "),
+    ("pj_title", "PAPER journal (local only, not on the network, not real money)", "دفتر معاملات کاغذی (فقط محلی، روی شبکه نمی‌رود، پول واقعی نیست)"),
+    ("pj_menu", "  1) Buy  2) Sell  3) Positions & P&L  4) List trades  5) Export CSV  6) Back", "  ۱) خرید  ۲) فروش  ۳) پوزیشن‌ها و سود و ضرر  ۴) فهرست معاملات  ۵) خروجی CSV  ۶) بازگشت"),
+    ("pj_choose", "Choose (1-6): ", "انتخاب کنید (۱ تا ۶): "),
+    ("pj_asset", "Asset (e.g. PAXG): ", "دارایی (مثلاً PAXG): "),
+    ("pj_qty", "Quantity: ", "مقدار: "),
+    ("pj_price", "Price: ", "قیمت: "),
+    ("pj_fee", "Fee (optional, Enter = 0): ", "کارمزد (اختیاری، Enter = صفر): "),
+    ("pj_note", "Note (optional): ", "یادداشت (اختیاری): "),
+    ("pj_cur", "Current price for unrealized P&L (Enter to skip): ", "قیمت فعلی برای سود و ضرر باز (Enter برای رد کردن): "),
+    ("pj_saved", "Saved (paper).", "ذخیره شد (کاغذی)."),
+    ("pj_csv", "CSV written to", "فایل CSV ذخیره شد در"),
     ("words_q", "How many words? 12 / 15 / 18 / 24 (24 recommended for post-quantum margin; 16 is not a BIP39 length): ",
      "چند کلمه؟ ۱۲ / ۱۵ / ۱۸ / ۲۴ (۲۴ برای حاشیه‌ی امنیت پساکوانتومی توصیه می‌شود؛ ۱۶ طول معتبر BIP39 نیست): "),
     ("bad_words", "Invalid length. Use 12, 15, 18 or 24.", "طول نامعتبر است. ۱۲، ۱۵، ۱۸ یا ۲۴ را وارد کنید."),
@@ -64,7 +76,7 @@ pub fn run(dir: &Path, lang: &str) -> Result<()> {
     let mut input = stdin.lock();
     loop {
         println!("\n{}", t(lang, "title"));
-        for k in ["m1", "m2", "m3", "m4"] {
+        for k in ["m1", "m2", "m3", "m4", "m5"] {
             println!("  {}", t(lang, k));
         }
         let Some(choice) = ask(lang, "choose", &mut input)? else {
@@ -108,6 +120,7 @@ pub fn run(dir: &Path, lang: &str) -> Result<()> {
                 println!("{}", t(lang, "bye"));
                 return Ok(());
             }
+            "5" => paper(dir, lang, &mut input),
             _ => {
                 println!("{}", t(lang, "unknown"));
                 Ok(())
@@ -115,6 +128,94 @@ pub fn run(dir: &Path, lang: &str) -> Result<()> {
         };
         if let Err(e) = r {
             println!("error: {e}");
+        }
+    }
+}
+
+fn num(s: &str) -> Option<f64> {
+    let s = digits(s).replace('٫', ".").replace(',', ".");
+    if s.is_empty() {
+        Some(0.0)
+    } else {
+        s.parse().ok()
+    }
+}
+
+fn paper(dir: &Path, lang: &str, input: &mut impl BufRead) -> Result<()> {
+    use crate::journal::{unrealized, Journal, Side};
+    let j = Journal::open(dir)?;
+    loop {
+        println!("\n{}\n{}", t(lang, "pj_title"), t(lang, "pj_menu"));
+        let Some(c) = ask(lang, "choose", input)? else {
+            return Ok(());
+        };
+        match digits(&c).as_str() {
+            "1" | "2" => {
+                let side = if digits(&c) == "1" {
+                    Side::Buy
+                } else {
+                    Side::Sell
+                };
+                let Some(asset) = ask(lang, "pj_asset", input)? else {
+                    return Ok(());
+                };
+                let Some(q) = ask(lang, "pj_qty", input)? else {
+                    return Ok(());
+                };
+                let Some(p) = ask(lang, "pj_price", input)? else {
+                    return Ok(());
+                };
+                let Some(f) = ask(lang, "pj_fee", input)? else {
+                    return Ok(());
+                };
+                let Some(note) = ask(lang, "pj_note", input)? else {
+                    return Ok(());
+                };
+                match (num(&q), num(&p), num(&f)) {
+                    (Some(q), Some(p), Some(f)) => {
+                        match j.add(crate::now(), side, &asset, q, p, f, &note) {
+                            Ok(_) => println!("{}", t(lang, "pj_saved")),
+                            Err(e) => println!("error: {e}"),
+                        }
+                    }
+                    _ => println!("error: bad number"),
+                }
+            }
+            "3" => {
+                let pos = j.positions()?;
+                for (a, p) in &pos {
+                    print!(
+                        "{a}: qty {:.8} avg {:.4} realized {:.4}",
+                        p.qty, p.avg_cost, p.realized
+                    );
+                    if p.qty > 0.0 {
+                        println!();
+                        if let Some(cur) = ask(lang, "pj_cur", input)? {
+                            if let Some(c) = num(&cur).filter(|c| *c > 0.0) {
+                                println!("  unrealized {:.4}", unrealized(p, c));
+                            }
+                        }
+                    } else {
+                        println!();
+                    }
+                }
+                let total: f64 = pos.values().map(|p| p.realized).sum();
+                println!("total realized (paper) {total:.4}");
+            }
+            "4" => {
+                for tr in j.trades()? {
+                    println!(
+                        "#{} {:?} {} {} @ {} fee {} {}",
+                        tr.id, tr.side, tr.qty, tr.asset, tr.price, tr.fee, tr.note
+                    );
+                }
+            }
+            "5" => {
+                let path = dir.join("paper_trades.csv");
+                std::fs::write(&path, j.csv()?)?;
+                println!("{} {}", t(lang, "pj_csv"), path.display());
+            }
+            _ => return Ok(()),
         }
     }
 }

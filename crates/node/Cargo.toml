@@ -8,6 +8,7 @@ rust-version.workspace = true
 name = "lastchange"
 path = "src/main.rs"
 [dependencies]
+rusqlite.workspace = true
 lc-core.workspace = true
 lc-ledger.workspace = true
 lc-reputation.workspace = true
