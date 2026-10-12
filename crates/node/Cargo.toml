@@ -20,3 +20,4 @@ hex.workspace = true
 axum.workspace = true
 futures.workspace = true
 serde.workspace = true
+rpassword = "7"

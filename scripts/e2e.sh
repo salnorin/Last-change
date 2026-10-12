@@ -5,6 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 cargo build -q -p lastchange-node
 B=target/debug/lastchange; T=$(mktemp -d); trap 'kill $(jobs -p) 2>/dev/null; cat $T/a.log $T/b.log; rm -rf $T' EXIT
+export LASTCHANGE_PASSPHRASE=e2e-test-passphrase
 $B --dir $T/a keygen >/dev/null; $B --dir $T/b keygen >/dev/null
 $B --dir $T/a --stamp-bits 8 serve --http 127.0.0.1:28081 --listen /ip4/127.0.0.1/tcp/24701 > $T/a.log 2>&1 &
 sleep 2; PA=$(grep -m1 -o 'peer .*' $T/a.log || true)

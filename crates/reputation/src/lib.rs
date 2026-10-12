@@ -11,6 +11,8 @@ use std::collections::{HashMap, HashSet};
 pub struct Item {
     pub id: String,
     pub author: String,
+    /// Display pseudonym (hash of both public keys).
+    pub pseudonym: String,
     pub payload: Payload,
     /// Unix seconds when seen (or listing.created).
     pub time: u64,
@@ -166,7 +168,7 @@ pub fn compute(items: &[Item], now: u64, p: &Params) -> HashMap<String, Score> {
 mod tests {
     use super::*;
     use lc_core::*;
-    fn item(id: &str, author: &str, p: Payload, t: u64) -> Item { Item { id: id.into(), author: author.into(), payload: p, time: t } }
+    fn item(id: &str, author: &str, p: Payload, t: u64) -> Item { Item { id: id.into(), author: author.into(), pseudonym: author.into(), payload: p, time: t } }
     fn listing() -> Payload { Payload::Listing(Listing { kind: ListingKind::Offer, title: "t".into(), desc: "".into(), price_hint: "".into(), category: "".into(), expiry: 0, image_hashes: vec![], created: 0 }) }
     fn rating(seller: &str, rcpt: &str, s: u8) -> Payload { Payload::Rating(Rating { listing_id: "L".into(), seller: seller.into(), receipt_id: rcpt.into(), score: s, comment: "".into() }) }
     fn rcpt(buyer: &str) -> Payload { Payload::DealReceipt(DealReceipt { listing_id: "L".into(), buyer: buyer.into() }) }

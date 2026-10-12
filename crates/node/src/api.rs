@@ -54,12 +54,14 @@ pub fn router(st: AppState) -> Router {
         .route("/api/rate", post(rate))
         .route("/api/report", post(report))
         .route("/api/envelope", post(envelope))
+        .route("/api/stamp", post(stamp))
         .route("/ws", get(ws))
         .with_state(st)
 }
 
 async fn whoami(State(s): State<AppState>) -> Json<Value> {
-    Json(json!({"pseudonym": s.id.pseudonym(), "pubkey": s.id.public_hex(), "stamp_bits": s.stamp_bits}))
+    Json(json!({"pseudonym": s.id.pseudonym(), "pubkey": s.id.public_hex(), "ml_dsa_65": s.id.pq_public_hex(),
+        "kem": s.id.kem_public(), "stamp_bits": s.stamp_bits}))
 }
 
 #[derive(Deserialize)]
@@ -75,11 +77,11 @@ async fn listings(State(s): State<AppState>, Query(q): Query<LQ>) -> R {
         let Payload::Listing(l) = &i.payload else { continue };
         let r = rep.get(&i.author);
         if r.is_some_and(|r| r.struck) || l.expiry < now() || led.is_blocked(&i.author).unwrap_or(false)
-            || led.is_blocked(&pseudonym_of(&i.author)).unwrap_or(false) || led.is_blocked(&i.id).unwrap_or(false) { continue; }
+            || led.is_blocked(&i.pseudonym.clone()).unwrap_or(false) || led.is_blocked(&i.id).unwrap_or(false) { continue; }
         if q.kind.as_deref().is_some_and(|k| !format!("{:?}", l.kind).eq_ignore_ascii_case(k)) { continue; }
         if q.category.as_deref().is_some_and(|c| !l.category.eq_ignore_ascii_case(c)) { continue; }
         if !format!("{} {} {}", l.title, l.desc, l.category).to_lowercase().contains(&needle) { continue; }
-        out.push(json!({"id": i.id, "seller": i.author, "seller_pseudonym": pseudonym_of(&i.author), "listing": l,
+        out.push(json!({"id": i.id, "seller": i.author, "seller_pseudonym": i.pseudonym.clone(), "listing": l,
             "rep": r.map(|r| json!({"mean": r.mean, "count": r.count, "reports": r.reports, "strikes": r.strikes}))}));
     }
     Ok(Json(Value::Array(out)))
@@ -146,6 +148,16 @@ async fn report(State(s): State<AppState>, Json(r): Json<ReportReq>) -> R {
 async fn envelope(State(s): State<AppState>, Json(env): Json<Envelope>) -> R {
     let new = s.ingest(env.clone()).await.map_err(err)?;
     Ok(Json(json!({"id": env.id(), "new": new})))
+}
+
+/// Light client flow: the client signs (both algorithms), this node computes the
+/// anti-spam stamp, verifies everything and publishes. Clients never do PoW.
+async fn stamp(State(s): State<AppState>, Json(mut env): Json<Envelope>) -> R {
+    env.verify_signatures().map_err(err)?;
+    let bits = s.stamp_bits;
+    let env = tokio::task::spawn_blocking(move || { env.stamp(bits); env }).await.map_err(err)?;
+    let new = s.ingest(env.clone()).await.map_err(err)?;
+    Ok(Json(json!({"id": env.id(), "nonce": env.nonce, "new": new})))
 }
 
 async fn ws(State(s): State<AppState>, up: WebSocketUpgrade) -> Response {
