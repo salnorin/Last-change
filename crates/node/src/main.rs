@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod api;
 #[cfg(feature = "full")]
 mod explorer;
+mod i18n;
 mod journal;
 mod menu;
 
@@ -27,9 +28,12 @@ struct Cli {
     dir: PathBuf,
     #[arg(long, default_value_t = DEFAULT_STAMP_BITS, global = true)]
     stamp_bits: u32,
-    /// Menu language: fa (default) or en.
-    #[arg(long, default_value = "fa", global = true)]
-    lang: String,
+    /// Menu language (en, de, es, ar, fr, zh, ru, tr, fa). Omit to choose from a numbered list.
+    #[arg(long, global = true)]
+    lang: Option<String>,
+    /// Menu info screens (account, explorer, send) print JSON.
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -360,7 +364,9 @@ async fn main() -> Result<()> {
         Ok(env.id())
     };
     let cmd = match cli.cmd {
-        None | Some(Cmd::Wallet { cmd: None }) => return menu::run(&cli.dir, &cli.lang),
+        None | Some(Cmd::Wallet { cmd: None }) => {
+            return menu::run(&cli.dir, cli.lang.as_deref(), cli.json)
+        }
         Some(c) => c,
     };
     match cmd {

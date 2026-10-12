@@ -7,45 +7,7 @@ use lc_core::Identity;
 use std::io::{BufRead, Write};
 use std::path::Path;
 
-/// (key, English, Persian)
-const T: &[(&str, &str, &str)] = &[
-    ("title", "Last-change wallet", "کیف پول Last-change"),
-    ("m1", "1) New wallet", "۱) کیف پول جدید"),
-    ("m2", "2) Restore from words", "۲) بازیابی با کلمات"),
-    ("m3", "3) Show wallet info", "۳) نمایش اطلاعات کیف پول"),
-    ("m4", "4) Exit", "۴) خروج"),
-    ("m5", "5) Paper trade journal / P&L", "۵) ثبت معامله کاغذی / دیدن سود و ضرر"),
-    ("choose", "Choose (1-5): ", "انتخاب کنید (۱ تا ۵): "),
-    ("pj_title", "PAPER journal (local only, not on the network, not real money)", "دفتر معاملات کاغذی (فقط محلی، روی شبکه نمی‌رود، پول واقعی نیست)"),
-    ("pj_menu", "  1) Buy  2) Sell  3) Positions & P&L  4) List trades  5) Export CSV  6) Back", "  ۱) خرید  ۲) فروش  ۳) پوزیشن‌ها و سود و ضرر  ۴) فهرست معاملات  ۵) خروجی CSV  ۶) بازگشت"),
-    ("pj_choose", "Choose (1-6): ", "انتخاب کنید (۱ تا ۶): "),
-    ("pj_asset", "Asset (e.g. PAXG): ", "دارایی (مثلاً PAXG): "),
-    ("pj_qty", "Quantity: ", "مقدار: "),
-    ("pj_price", "Price: ", "قیمت: "),
-    ("pj_fee", "Fee (optional, Enter = 0): ", "کارمزد (اختیاری، Enter = صفر): "),
-    ("pj_note", "Note (optional): ", "یادداشت (اختیاری): "),
-    ("pj_cur", "Current price for unrealized P&L (Enter to skip): ", "قیمت فعلی برای سود و ضرر باز (Enter برای رد کردن): "),
-    ("pj_saved", "Saved (paper).", "ذخیره شد (کاغذی)."),
-    ("pj_csv", "CSV written to", "فایل CSV ذخیره شد در"),
-    ("words_q", "How many words? 12 / 15 / 18 / 24 (24 recommended for post-quantum margin; 16 is not a BIP39 length): ",
-     "چند کلمه؟ ۱۲ / ۱۵ / ۱۸ / ۲۴ (۲۴ برای حاشیه‌ی امنیت پساکوانتومی توصیه می‌شود؛ ۱۶ طول معتبر BIP39 نیست): "),
-    ("bad_words", "Invalid length. Use 12, 15, 18 or 24.", "طول نامعتبر است. ۱۲، ۱۵، ۱۸ یا ۲۴ را وارد کنید."),
-    ("enter_words", "Enter your words separated by spaces: ", "کلمات خود را با فاصله وارد کنید: "),
-    ("no_wallet", "No wallet yet. Choose 1 or 2.", "هنوز کیف پولی نیست. ۱ یا ۲ را انتخاب کنید."),
-    ("keys", "Key types: Ed25519 + ML-DSA-65 (FIPS 204) hybrid signatures; X25519 + ML-KEM-768 (FIPS 203) encryption. All derived from your words.",
-     "نوع کلیدها: امضای ترکیبی Ed25519 + ML-DSA-65 (FIPS 204)؛ رمزنگاری X25519 + ML-KEM-768 (FIPS 203). همه از کلمات شما ساخته می‌شوند."),
-    ("bye", "Bye.", "خدانگهدار."),
-    ("unknown", "Unknown choice.", "گزینه‌ی نامعتبر."),
-];
-
-fn t(lang: &str, key: &str) -> &'static str {
-    let row = T.iter().find(|r| r.0 == key).expect("i18n key");
-    if lang == "en" {
-        row.1
-    } else {
-        row.2
-    }
-}
+use crate::i18n::{t, LANGS, LANG_PROMPT};
 
 /// Accept ASCII or Persian/Arabic-Indic digits.
 fn digits(s: &str) -> String {
@@ -70,25 +32,119 @@ fn ask(lang: &str, key: &str, input: &mut impl BufRead) -> Result<Option<String>
     Ok(Some(line.trim().to_string()))
 }
 
-pub fn run(dir: &Path, lang: &str) -> Result<()> {
+/// Numbered language picker; `None` on EOF. Re-asks on invalid input.
+fn pick_lang(input: &mut impl BufRead) -> Result<Option<&'static str>> {
+    loop {
+        println!("\n{LANG_PROMPT}");
+        for (i, (_, name)) in LANGS.iter().enumerate() {
+            println!("  {}) {name}", i + 1);
+        }
+        print!("> ");
+        std::io::stdout().flush()?;
+        let mut line = String::new();
+        if input.read_line(&mut line)? == 0 {
+            return Ok(None);
+        }
+        if let Ok(n) = digits(&line).parse::<usize>() {
+            if (1..=LANGS.len()).contains(&n) {
+                return Ok(Some(LANGS[n - 1].0));
+            }
+        }
+    }
+}
+
+/// Run the menu. `lang = None` shows the language picker first.
+/// `json = true` makes the info screens (account, explorer, send) print JSON instead of text.
+pub fn run(dir: &Path, lang: Option<&str>, json: bool) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
+    let lang = match lang {
+        Some(l) => l,
+        None => match pick_lang(&mut input)? {
+            Some(l) => l,
+            None => return Ok(()),
+        },
+    };
     loop {
         println!("\n{}", t(lang, "title"));
-        for k in ["m1", "m2", "m3", "m4", "m5"] {
+        for k in ["top1", "top2", "top3", "top4", "top5"] {
             println!("  {}", t(lang, k));
         }
         let Some(choice) = ask(lang, "choose", &mut input)? else {
             return Ok(());
         };
+        let r: Result<bool> = match digits(&choice).as_str() {
+            "1" => wallet_menu(dir, lang, &mut input),
+            "2" => account(dir, lang, json, &mut input).map(|_| true),
+            "3" => {
+                explorer_info(dir, lang, json);
+                Ok(true)
+            }
+            "4" => {
+                send_info(lang, json);
+                Ok(true)
+            }
+            "5" => {
+                println!("{}", t(lang, "bye"));
+                return Ok(());
+            }
+            _ => {
+                println!("{}", t(lang, "unknown"));
+                Ok(true)
+            }
+        };
+        match r {
+            Ok(false) => return Ok(()),
+            Ok(true) => {}
+            Err(e) => println!("error: {e}"),
+        }
+    }
+}
+
+fn yes(s: &str) -> bool {
+    let s = s.trim().to_lowercase();
+    [
+        "y", "yes", "j", "ja", "s", "si", "sí", "o", "oui", "e", "evet", "д", "да", "是", "ن",
+        "نعم", "ب", "بله",
+    ]
+    .contains(&s.as_str())
+}
+
+/// Wallet section. Returns Ok(false) on EOF.
+fn wallet_menu(dir: &Path, lang: &str, input: &mut impl BufRead) -> Result<bool> {
+    loop {
+        println!("\n{}", t(lang, "top1"));
+        for k in ["m1", "m2", "m3", "wm4", "wm5"] {
+            println!("  {}", t(lang, k));
+        }
+        let Some(choice) = ask(lang, "choose", input)? else {
+            return Ok(false);
+        };
         let r: Result<()> = match digits(&choice).as_str() {
+            // web-app-ready: wallet creation (words + optional secret reveal)
             "1" => {
-                let Some(w) = ask(lang, "words_q", &mut input)? else {
-                    return Ok(());
+                let Some(w) = ask(lang, "words_q", input)? else {
+                    return Ok(false);
                 };
                 match digits(&w).parse::<usize>() {
-                    Ok(n) if [12, 15, 18, 24].contains(&n) => crate::wallet_new(dir, n, false),
+                    Ok(n) if [12, 15, 18, 24].contains(&n) => {
+                        println!("{}", t(lang, "warn"));
+                        let r = crate::wallet_new(dir, n, false);
+                        if r.is_ok() {
+                            println!("{}", t(lang, "warn"));
+                            let Some(a) = ask(lang, "key_q", input)? else {
+                                return Ok(false);
+                            };
+                            if yes(&a) {
+                                let id = crate::load_id(dir)?;
+                                println!("{}", t(lang, "key_label"));
+                                println!("{}", hex::encode(id.master_bytes()));
+                                println!("{}", t(lang, "warn"));
+                            }
+                        }
+                        r
+                    }
                     _ => {
                         println!("{}", t(lang, "bad_words"));
                         Ok(())
@@ -96,8 +152,8 @@ pub fn run(dir: &Path, lang: &str) -> Result<()> {
                 }
             }
             "2" => {
-                let Some(w) = ask(lang, "enter_words", &mut input)? else {
-                    return Ok(());
+                let Some(w) = ask(lang, "enter_words", input)? else {
+                    return Ok(false);
                 };
                 Identity::from_mnemonic(&w)
                     .map_err(anyhow::Error::from)
@@ -116,11 +172,8 @@ pub fn run(dir: &Path, lang: &str) -> Result<()> {
                     Ok(())
                 }
             },
-            "4" => {
-                println!("{}", t(lang, "bye"));
-                return Ok(());
-            }
-            "5" => paper(dir, lang, &mut input),
+            "4" => paper(dir, lang, input),
+            "5" => return Ok(true),
             _ => {
                 println!("{}", t(lang, "unknown"));
                 Ok(())
@@ -129,6 +182,96 @@ pub fn run(dir: &Path, lang: &str) -> Result<()> {
         if let Err(e) = r {
             println!("error: {e}");
         }
+    }
+}
+
+/// web-app-ready: read-only account view (pseudonym, ledger entries, reputation). No value logic.
+fn account(dir: &Path, lang: &str, json: bool, input: &mut impl BufRead) -> Result<()> {
+    let Some(q) = ask(lang, "lookup_q", input)? else {
+        return Ok(());
+    };
+    let (pseudonym, pubkey) = if q.is_empty() {
+        match crate::load_id(dir) {
+            Ok(id) => (id.pseudonym(), id.public_hex()),
+            Err(_) => {
+                println!("{}", t(lang, "no_wallet"));
+                return Ok(());
+            }
+        }
+    } else {
+        (q.clone(), q.clone())
+    };
+    let led = lc_ledger::Ledger::open(&dir.join("ledger.db"), 0)?;
+    let items = crate::items(&led)?;
+    let mine: Vec<_> = items
+        .iter()
+        .filter(|i| i.pseudonym == pseudonym || i.author == pubkey)
+        .collect();
+    let author = mine.first().map(|i| i.author.clone()).unwrap_or(pubkey);
+    let rep = lc_reputation::compute(&items, crate::now(), &Default::default());
+    let score = rep.get(&author);
+    if json {
+        let v = serde_json::json!({
+            "query": q,
+            "pseudonym": mine.first().map(|i| i.pseudonym.clone()).unwrap_or(pseudonym),
+            "pubkey": author,
+            "ledger_entries": mine.len(),
+            "reputation": score.map(|s| serde_json::json!({
+                "mean": s.mean, "count": s.count, "reports": s.reports, "strikes": s.strikes,
+            })),
+            "holdings": 0,
+            "note": "testnet has no coins or on-chain value",
+        });
+        println!("{v}");
+    } else {
+        println!(
+            "pseudonym  {pseudonym}\npubkey     {author}\nentries    {}",
+            mine.len()
+        );
+        match score {
+            Some(s) => println!(
+                "reputation mean {:.2} ({} ratings, {} reports, {} strikes)",
+                s.mean, s.count, s.reports, s.strikes
+            ),
+            None => println!("reputation -"),
+        }
+        println!("{}", t(lang, "no_coin"));
+    }
+    Ok(())
+}
+
+/// web-app-ready: explorer pointer + local chain summary.
+fn explorer_info(dir: &Path, lang: &str, json: bool) {
+    let c = LocalChain::load_or_init(dir).ok();
+    let full = cfg!(feature = "full");
+    if json {
+        let v = serde_json::json!({
+            "explorer_in_this_build": full,
+            "command": "lastchange explorer --http 127.0.0.1:8090",
+            "url": "http://127.0.0.1:8090",
+            "api": ["/api/blocks", "/api/block/:hash"],
+            "height": c.as_ref().map(|c| c.height),
+            "tip_hash": c.as_ref().map(|c| c.tip_hash.clone()),
+        });
+        println!("{v}");
+    } else {
+        println!("{}", t(lang, "explorer_info"));
+        if let Some(c) = c {
+            println!("chain tip  {} (height {})", c.tip_hash, c.height);
+        }
+    }
+}
+
+/// web-app-ready: sending is intentionally unavailable (no on-chain value exists).
+fn send_info(lang: &str, json: bool) {
+    if json {
+        let v = serde_json::json!({
+            "available": false,
+            "reason": "Last-change testnet has no coins. See docs/FUTURE_POW_TOKEN.md",
+        });
+        println!("{v}");
+    } else {
+        println!("{}", t(lang, "send_na"));
     }
 }
 
@@ -146,7 +289,7 @@ fn paper(dir: &Path, lang: &str, input: &mut impl BufRead) -> Result<()> {
     let j = Journal::open(dir)?;
     loop {
         println!("\n{}\n{}", t(lang, "pj_title"), t(lang, "pj_menu"));
-        let Some(c) = ask(lang, "choose", input)? else {
+        let Some(c) = ask(lang, "pj_choose", input)? else {
             return Ok(());
         };
         match digits(&c).as_str() {
@@ -227,11 +370,5 @@ mod tests {
     fn persian_digits() {
         assert_eq!(digits("۲۴"), "24");
         assert_eq!(digits(" 3 "), "3");
-    }
-    #[test]
-    fn all_keys_have_both_languages() {
-        for (k, en, fa) in T {
-            assert!(!en.is_empty() && !fa.is_empty(), "{k}");
-        }
     }
 }
