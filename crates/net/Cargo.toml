@@ -1,0 +1,18 @@
+[package]
+name = "lastchange-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+[lib]
+name = "lc_net"
+[dependencies]
+lc-core.workspace = true
+libp2p.workspace = true
+tokio.workspace = true
+futures.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+[dev-dependencies]
+lc-ledger.workspace = true
+tempfile.workspace = true

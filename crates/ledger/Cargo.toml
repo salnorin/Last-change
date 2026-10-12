@@ -1,0 +1,17 @@
+[package]
+name = "lastchange-ledger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+[lib]
+name = "lc_ledger"
+[dependencies]
+lc-core.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+[dev-dependencies]
+tempfile.workspace = true
