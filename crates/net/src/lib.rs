@@ -4,8 +4,11 @@
 //! verify (the ledger does) before storing or re-publishing.
 
 use futures::StreamExt;
-use libp2p::{gossipsub, identify, identity, kad, noise, swarm::NetworkBehaviour, swarm::SwarmEvent, tcp, yamux, Multiaddr, PeerId, Swarm};
 use lc_core::Envelope;
+use libp2p::{
+    gossipsub, identify, identity, kad, noise, swarm::NetworkBehaviour, swarm::SwarmEvent, tcp,
+    yamux, Multiaddr, PeerId, Swarm,
+};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -18,17 +21,28 @@ pub struct Behaviour {
     pub identify: identify::Behaviour,
 }
 
-pub enum Command { Publish(Envelope), Dial(Multiaddr) }
+pub enum Command {
+    Publish(Envelope),
+    Dial(Multiaddr),
+}
 
 #[derive(Debug)]
-pub enum Event { Listening(Multiaddr), Connected(PeerId), Received(Envelope) }
+pub enum Event {
+    Listening(Multiaddr),
+    Connected(PeerId),
+    Received(Envelope),
+}
 
 /// Build a swarm. The network key is a fresh ephemeral key, NOT the user's
 /// marketplace identity, so transport peer ids are unlinkable to pseudonyms.
 pub fn build_swarm() -> anyhow::Result<Swarm<Behaviour>> {
     let swarm = libp2p::SwarmBuilder::with_new_identity()
         .with_tokio()
-        .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)?
+        .with_tcp(
+            tcp::Config::default(),
+            noise::Config::new,
+            yamux::Config::default,
+        )?
         .with_behaviour(|key: &identity::Keypair| {
             let cfg = gossipsub::ConfigBuilder::default()
                 .heartbeat_interval(Duration::from_millis(500))
@@ -36,13 +50,21 @@ pub fn build_swarm() -> anyhow::Result<Swarm<Behaviour>> {
                 .max_transmit_size(64 * 1024)
                 .build()
                 .map_err(|e| anyhow::anyhow!(e))?;
-            let gossipsub = gossipsub::Behaviour::new(gossipsub::MessageAuthenticity::Signed(key.clone()), cfg)
-                .map_err(|e| anyhow::anyhow!(e))?;
+            let gossipsub =
+                gossipsub::Behaviour::new(gossipsub::MessageAuthenticity::Signed(key.clone()), cfg)
+                    .map_err(|e| anyhow::anyhow!(e))?;
             let pid = key.public().to_peer_id();
             let mut kad = kad::Behaviour::new(pid, kad::store::MemoryStore::new(pid));
             kad.set_mode(Some(kad::Mode::Server));
-            let identify = identify::Behaviour::new(identify::Config::new("/lastchange/1.0".into(), key.public()));
-            Ok(Behaviour { gossipsub, kad, identify })
+            let identify = identify::Behaviour::new(identify::Config::new(
+                "/lastchange/1.0".into(),
+                key.public(),
+            ));
+            Ok(Behaviour {
+                gossipsub,
+                kad,
+                identify,
+            })
         })?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
@@ -50,7 +72,11 @@ pub fn build_swarm() -> anyhow::Result<Swarm<Behaviour>> {
 }
 
 /// Run the node loop: listen on `listen`, handle commands, emit events.
-pub async fn run(listen: Multiaddr, mut cmds: mpsc::Receiver<Command>, events: mpsc::Sender<Event>) -> anyhow::Result<()> {
+pub async fn run(
+    listen: Multiaddr,
+    mut cmds: mpsc::Receiver<Command>,
+    events: mpsc::Sender<Event>,
+) -> anyhow::Result<()> {
     let mut swarm = build_swarm()?;
     let topic = gossipsub::IdentTopic::new(TOPIC);
     swarm.behaviour_mut().gossipsub.subscribe(&topic)?;

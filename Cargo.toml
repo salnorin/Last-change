@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/circuit-pow", "crates/core", "crates/ledger", "crates/reputation", "crates/net", "crates/node"]
+members = ["crates/chain", "crates/circuit-pow", "crates/core", "crates/ledger", "crates/reputation", "crates/net", "crates/node"]
 
 [workspace.package]
 version = "0.1.0"
@@ -29,3 +29,4 @@ lc-core = { path = "crates/core", package = "lastchange-core" }
 lc-ledger = { path = "crates/ledger", package = "lastchange-ledger" }
 lc-reputation = { path = "crates/reputation", package = "lastchange-reputation" }
 lc-net = { path = "crates/net", package = "lastchange-net" }
+lc-chain = { path = "crates/chain", package = "lastchange-chain" }

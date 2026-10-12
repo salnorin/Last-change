@@ -6,7 +6,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: No token / mining / payment logic in live code
+        with: { components: rustfmt, clippy }
+      - name: Value-logic guard
         run: ./scripts/check_no_token.sh
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --locked
       - run: ./scripts/e2e.sh

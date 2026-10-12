@@ -3,6 +3,8 @@
 **A pseudonymous peer-to-peer marketplace with no middleman and provable trust.**
 
 > Bitcoin removed the third party from money. Last-change removes it from buying and selling.
+>
+> **No third party.** Any two pseudonymous parties trade directly with each other. Neither needs to learn the other's real identity, and no platform sits in the middle of the deal.
 
 > ### ⚖️ Legal notice
 > - This software has **no token, no cryptocurrency, no payments, no escrow and never holds funds.** Money and goods change hands directly between the parties, outside the software.
@@ -12,7 +14,7 @@
 
 ## Features (implemented)
 - **Post-quantum hybrid signatures:** every message is signed with **Ed25519 + ML-DSA-65 (FIPS 204)**, and both must verify. Private deal messages use **X25519 + ML-KEM-768 (FIPS 203)**. Keys live in an Argon2id-encrypted keystore (`lastchange wallet new/show/export`, keys only, no balances). Trade-off: about 3.3 KB signatures, so entries are about 25× larger. The libp2p transport itself is not PQ yet ([docs/POST_QUANTUM.md](docs/POST_QUANTUM.md)).
-- **Pseudonymous P2P:** your identity is a keypair generated on your device. There is no name, email, phone, KYC or profile. Networking runs on libp2p (gossipsub, Kademlia, Noise), and the network key is kept separate from your identity.
+- **Pseudonymous P2P:** your identity is a keypair generated on your device. There is no name, email, phone, KYC or profile. Any two parties trade directly; neither learns the other's real identity. Networking runs on libp2p (gossipsub, Kademlia, Noise), and the network key is kept separate from your identity.
 - **Offers and requests:** goods, services, and **artworks/paintings** (`category=art`) with image content-hash links. Images stay off the ledger.
 - **Proof of Trust:** a signed deal lifecycle: accept, paid (off-network), shipped, and then confirmed or disputed. If the seller accepted but posted no "shipped" within the timeout (14 days by default), the buyer's non-delivery claim gives the seller a **strike**. The default is a **one-strike** policy (configurable): honest peers hide that seller's listings and zero their reputation. A false claim halves the claimer's own rating weight, and every claim needs a 16× harder anti-spam stamp.
 - **Fake-review-resistant reputation:** you can rate only with a seller-signed "deal completed" receipt. Ratings are weighted by the rater's reputation and decay over time.
@@ -27,6 +29,14 @@
 - 🚫 **Monero / delisted-asset atomic swaps:** **design only, not implemented.** They need legal review first.
 
 ## Quick start
+Website: https://salnorin.github.io/Last-change/ (testnet explorer and UI mock-ups)
+
+One-line install (Linux/macOS/Termux, needs Rust):
+```sh
+curl -sSf https://raw.githubusercontent.com/salnorin/Last-change/main/scripts/install.sh | sh
+```
+Android/Termux: [docs/TERMUX.md](docs/TERMUX.md). Prebuilt binaries come from the `release` workflow.
+
 ```sh
 cargo build --release && B=target/release/lastchange
 export LASTCHANGE_PASSPHRASE=...   # or enter it when prompted
@@ -37,10 +47,17 @@ $B --dir node2 keygen && $B --dir node2 serve --http 127.0.0.1:8081 --dial /ip4/
 ./scripts/e2e.sh                            # full two-node demo/test
 cargo test --workspace
 ```
-CLI: `wallet new|show|export msg-seal msg-open keygen whoami post list search accept step claim complete-deal rate trust report block status peers serve`
+CLI: `wallet new|show|export explorer msg-seal msg-open keygen whoami post list search accept step claim complete-deal rate trust report block status peers serve`
+
+## Testnet genesis
+`lastchange wallet new` also creates local chain state at the hardcoded testnet genesis
+(`crates/chain/genesis.hash`). Its spendable coinbase value is 0, and it carries the founding message plus a symbolic **50 EST locked forever, spendable by no one** (a burn script with no key, and a consensus rule rejects any reference to it). `lastchange explorer` shows
+blocks and circuit details (gate count, hash order) at http://127.0.0.1:8090.
 
 ## Layout
 `crates/circuit-pow` (work stamp) · `core` (types, signing, filter) · `ledger` (SQLite + Merkle root) · `reputation` (scores + Proof of Trust) · `net` (libp2p) · `node` (CLI, API, web app) · `web/`
 
 ## Author
 **Salar Khanbaba (salnorin)**. See also [MISSION.md](MISSION.md) and [docs/FUTURE.md](docs/FUTURE.md).
+
+*For Satoshi Nakamoto, who stepped out of the light so that no one would need to be trusted, and showed that power shared by everyone belongs to no one.*

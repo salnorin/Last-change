@@ -1,0 +1,20 @@
+[package]
+name = "lastchange-chain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Zero-value TESTNET genesis and local chain tip. Coinbase value is always 0."
+[lib]
+name = "lc_chain"
+[[bin]]
+name = "mkgenesis"
+path = "src/bin/mkgenesis.rs"
+[dependencies]
+lc-core.workspace = true
+circuit-pow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true

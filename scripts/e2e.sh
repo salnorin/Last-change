@@ -3,7 +3,7 @@
 # then run the full Proof of Trust + rating flow across nodes.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-cargo build -q -p lastchange-node
+cargo build -q -p lastchange
 B=target/debug/lastchange; T=$(mktemp -d); trap 'kill $(jobs -p) 2>/dev/null; cat $T/a.log $T/b.log; rm -rf $T' EXIT
 export LASTCHANGE_PASSPHRASE=e2e-test-passphrase
 $B --dir $T/a keygen >/dev/null; $B --dir $T/b keygen >/dev/null
@@ -27,4 +27,4 @@ for i in $(seq 20); do curl -s -XPOST $Bu/rate -H 'content-type: application/jso
 APK=$(curl -s $A/whoami | j "['pubkey']")
 for i in $(seq 20); do curl -s $A/trust/$APK | grep -q '"count":1' && break; sleep 1; done
 curl -s $A/trust/$APK | grep -q '"count":1' && echo "OK rating from B counted on A: $(curl -s $A/trust/$APK)"
-curl -s http://127.0.0.1:28081/ | grep -q Last-change && echo "OK web app served"
+curl -s http://127.0.0.1:28081/ | grep -q js/app.js && echo "OK web app served"

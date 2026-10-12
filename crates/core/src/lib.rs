@@ -41,7 +41,9 @@ pub fn sha256_hex(data: &[u8]) -> String {
 /// Derive a 32-byte sub-key from the master seed (HKDF-SHA256).
 pub(crate) fn derive(master: &[u8; 32], label: &str) -> [u8; 32] {
     let mut out = [0u8; 32];
-    hkdf::Hkdf::<Sha256>::new(Some(b"lastchange-keys-v1"), master).expand(label.as_bytes(), &mut out).expect("hkdf");
+    hkdf::Hkdf::<Sha256>::new(Some(b"lastchange-keys-v1"), master)
+        .expand(label.as_bytes(), &mut out)
+        .expect("hkdf");
     out
 }
 
@@ -66,11 +68,19 @@ impl Identity {
         let pq = ml_dsa::SigningKey::<MlDsa65>::from_seed(&seed.into());
         Self { master: *m, ed, pq }
     }
-    pub fn master_bytes(&self) -> [u8; 32] { self.master }
-    pub fn public_hex(&self) -> String { hex::encode(self.ed.verifying_key().to_bytes()) }
-    pub fn pq_public_hex(&self) -> String { hex::encode(self.pq.expanded_key().verifying_key().encode().as_slice()) }
+    pub fn master_bytes(&self) -> [u8; 32] {
+        self.master
+    }
+    pub fn public_hex(&self) -> String {
+        hex::encode(self.ed.verifying_key().to_bytes())
+    }
+    pub fn pq_public_hex(&self) -> String {
+        hex::encode(self.pq.expanded_key().verifying_key().encode().as_slice())
+    }
     /// Pseudonym = first 20 bytes of sha256(ed25519_pub || ml_dsa_pub).
-    pub fn pseudonym(&self) -> String { pseudonym_of(&self.public_hex(), &self.pq_public_hex()) }
+    pub fn pseudonym(&self) -> String {
+        pseudonym_of(&self.public_hex(), &self.pq_public_hex())
+    }
 
     /// Client side: sign (both algorithms) without a stamp (nonce = 0).
     pub fn sign(&self, payload: &Payload) -> Envelope {
@@ -78,8 +88,19 @@ impl Identity {
         let (author, pq_pub) = (self.public_hex(), self.pq_public_hex());
         let msg = signing_bytes(&author, &pq_pub, &body);
         let sig = hex::encode(self.ed.sign(&msg).to_bytes());
-        let pq_sig = self.pq.expanded_key().sign_deterministic(&msg, PQ_CTX).expect("ml-dsa sign");
-        Envelope { author, pq_pub, body, sig, pq_sig: hex::encode(pq_sig.encode().as_slice()), nonce: 0 }
+        let pq_sig = self
+            .pq
+            .expanded_key()
+            .sign_deterministic(&msg, PQ_CTX)
+            .expect("ml-dsa sign");
+        Envelope {
+            author,
+            pq_pub,
+            body,
+            sig,
+            pq_sig: hex::encode(pq_sig.encode().as_slice()),
+            nonce: 0,
+        }
     }
     /// Sign and stamp locally (desktop/server nodes).
     pub fn seal(&self, payload: &Payload, stamp_bits: u32) -> Envelope {
@@ -87,6 +108,55 @@ impl Identity {
         e.stamp(stamp_bits);
         e
     }
+    /// Hybrid-sign arbitrary bytes under a domain label. Returns (ed_sig_hex, pq_sig_hex).
+    pub fn sign_bytes(&self, domain: &str, msg: &[u8]) -> (String, String) {
+        let mut m = format!("{domain}|").into_bytes();
+        m.extend_from_slice(msg);
+        let pq = self
+            .pq
+            .expanded_key()
+            .sign_deterministic(&m, PQ_CTX)
+            .expect("ml-dsa sign");
+        (
+            hex::encode(self.ed.sign(&m).to_bytes()),
+            hex::encode(pq.encode().as_slice()),
+        )
+    }
+}
+
+pub fn verify_bytes(
+    domain: &str,
+    msg: &[u8],
+    ed_hex: &str,
+    pq_hex: &str,
+    sig: &str,
+    pq_sig: &str,
+) -> Result<(), CoreError> {
+    let mut m = format!("{domain}|").into_bytes();
+    m.extend_from_slice(msg);
+    let pk: [u8; 32] = hex::decode(ed_hex)
+        .ok()
+        .and_then(|v| v.try_into().ok())
+        .ok_or(CoreError::BadKey)?;
+    let vk = VerifyingKey::from_bytes(&pk).map_err(|_| CoreError::BadKey)?;
+    let sg: [u8; 64] = hex::decode(sig)
+        .ok()
+        .and_then(|v| v.try_into().ok())
+        .ok_or(CoreError::BadSignature)?;
+    vk.verify(&m, &Signature::from_bytes(&sg))
+        .map_err(|_| CoreError::BadSignature)?;
+    let pqb = hex::decode(pq_hex).map_err(|_| CoreError::BadKey)?;
+    let enc_vk = ml_dsa::EncodedVerifyingKey::<MlDsa65>::try_from(pqb.as_slice())
+        .map_err(|_| CoreError::BadKey)?;
+    let pvk = ml_dsa::VerifyingKey::<MlDsa65>::decode(&enc_vk);
+    let sb = hex::decode(pq_sig).map_err(|_| CoreError::BadPqSignature)?;
+    let enc_sig = ml_dsa::EncodedSignature::<MlDsa65>::try_from(sb.as_slice())
+        .map_err(|_| CoreError::BadPqSignature)?;
+    let psig = ml_dsa::Signature::<MlDsa65>::decode(&enc_sig).ok_or(CoreError::BadPqSignature)?;
+    if !pvk.verify_with_context(&m, PQ_CTX, &psig) {
+        return Err(CoreError::BadPqSignature);
+    }
+    Ok(())
 }
 
 pub fn pseudonym_of(ed_hex: &str, pq_hex: &str) -> String {
@@ -197,19 +267,37 @@ impl Payload {
         let bad = |s: &str| Err(CoreError::Invalid(s.into()));
         match self {
             Payload::Listing(l) => {
-                if l.title.trim().is_empty() || l.title.len() > 200 { return bad("title length"); }
-                if l.desc.len() > 4000 { return bad("desc too long"); }
-                if l.image_hashes.len() > 8 { return bad("too many images"); }
+                if l.title.trim().is_empty() || l.title.len() > 200 {
+                    return bad("title length");
+                }
+                if l.desc.len() > 4000 {
+                    return bad("desc too long");
+                }
+                if l.image_hashes.len() > 8 {
+                    return bad("too many images");
+                }
                 if filter::is_forbidden(&format!("{} {} {}", l.title, l.desc, l.category)) {
                     return bad("content filter");
                 }
             }
             Payload::Rating(r) => {
-                if !(1..=5).contains(&r.score) { return bad("score must be 1-5"); }
-                if r.comment.len() > 1000 { return bad("comment too long"); }
+                if !(1..=5).contains(&r.score) {
+                    return bad("score must be 1-5");
+                }
+                if r.comment.len() > 1000 {
+                    return bad("comment too long");
+                }
             }
-            Payload::Report(r) => if r.reason.len() > 500 { return bad("reason too long"); },
-            Payload::Claim(c) => if c.reason.len() > 500 { return bad("reason too long"); },
+            Payload::Report(r) => {
+                if r.reason.len() > 500 {
+                    return bad("reason too long");
+                }
+            }
+            Payload::Claim(c) => {
+                if c.reason.len() > 500 {
+                    return bad("reason too long");
+                }
+            }
             Payload::DealReceipt(_) | Payload::DealAccept(_) | Payload::DealStep(_) => {}
         }
         Ok(())
@@ -247,32 +335,56 @@ impl Envelope {
         circuit_pow::seed_from(&v)
     }
     fn required_bits(&self, min: u32) -> u32 {
-        if matches!(self.payload(), Ok(Payload::Claim(_))) { min + CLAIM_EXTRA_BITS } else { min }
+        if matches!(self.payload(), Ok(Payload::Claim(_))) {
+            min + CLAIM_EXTRA_BITS
+        } else {
+            min
+        }
     }
     /// Compute the anti-spam stamp (node side). Claims get CLAIM_EXTRA_BITS more.
     pub fn stamp(&mut self, bits: u32) {
         self.nonce = circuit_pow::solve(self.stamp_seed(), self.required_bits(bits));
     }
-    pub fn stamp_bits(&self) -> u32 { circuit_pow::work_bits(self.stamp_seed(), self.nonce) }
+    pub fn stamp_bits(&self) -> u32 {
+        circuit_pow::work_bits(self.stamp_seed(), self.nonce)
+    }
     /// Content id: independent of the stamp nonce.
-    pub fn id(&self) -> String { hex::encode(self.core_hash()) }
-    pub fn author_pseudonym(&self) -> String { pseudonym_of(&self.author, &self.pq_pub) }
-    pub fn payload(&self) -> Result<Payload, CoreError> { Ok(serde_json::from_str(&self.body)?) }
+    pub fn id(&self) -> String {
+        hex::encode(self.core_hash())
+    }
+    pub fn author_pseudonym(&self) -> String {
+        pseudonym_of(&self.author, &self.pq_pub)
+    }
+    pub fn payload(&self) -> Result<Payload, CoreError> {
+        Ok(serde_json::from_str(&self.body)?)
+    }
 
     /// Verify both signatures (hybrid: BOTH must be valid) and payload rules.
     pub fn verify_signatures(&self) -> Result<Payload, CoreError> {
         let msg = signing_bytes(&self.author, &self.pq_pub, &self.body);
-        let pk: [u8; 32] = hex::decode(&self.author).ok().and_then(|v| v.try_into().ok()).ok_or(CoreError::BadKey)?;
+        let pk: [u8; 32] = hex::decode(&self.author)
+            .ok()
+            .and_then(|v| v.try_into().ok())
+            .ok_or(CoreError::BadKey)?;
         let vk = VerifyingKey::from_bytes(&pk).map_err(|_| CoreError::BadKey)?;
-        let sig: [u8; 64] = hex::decode(&self.sig).ok().and_then(|v| v.try_into().ok()).ok_or(CoreError::BadSignature)?;
-        vk.verify(&msg, &Signature::from_bytes(&sig)).map_err(|_| CoreError::BadSignature)?;
+        let sig: [u8; 64] = hex::decode(&self.sig)
+            .ok()
+            .and_then(|v| v.try_into().ok())
+            .ok_or(CoreError::BadSignature)?;
+        vk.verify(&msg, &Signature::from_bytes(&sig))
+            .map_err(|_| CoreError::BadSignature)?;
         let pqb = hex::decode(&self.pq_pub).map_err(|_| CoreError::BadKey)?;
-        let enc_vk = ml_dsa::EncodedVerifyingKey::<MlDsa65>::try_from(pqb.as_slice()).map_err(|_| CoreError::BadKey)?;
+        let enc_vk = ml_dsa::EncodedVerifyingKey::<MlDsa65>::try_from(pqb.as_slice())
+            .map_err(|_| CoreError::BadKey)?;
         let pvk = ml_dsa::VerifyingKey::<MlDsa65>::decode(&enc_vk);
         let sb = hex::decode(&self.pq_sig).map_err(|_| CoreError::BadPqSignature)?;
-        let enc_sig = ml_dsa::EncodedSignature::<MlDsa65>::try_from(sb.as_slice()).map_err(|_| CoreError::BadPqSignature)?;
-        let psig = ml_dsa::Signature::<MlDsa65>::decode(&enc_sig).ok_or(CoreError::BadPqSignature)?;
-        if !pvk.verify_with_context(&msg, PQ_CTX, &psig) { return Err(CoreError::BadPqSignature); }
+        let enc_sig = ml_dsa::EncodedSignature::<MlDsa65>::try_from(sb.as_slice())
+            .map_err(|_| CoreError::BadPqSignature)?;
+        let psig =
+            ml_dsa::Signature::<MlDsa65>::decode(&enc_sig).ok_or(CoreError::BadPqSignature)?;
+        if !pvk.verify_with_context(&msg, PQ_CTX, &psig) {
+            return Err(CoreError::BadPqSignature);
+        }
         let p = self.payload()?;
         p.validate()?;
         Ok(p)
@@ -280,7 +392,9 @@ impl Envelope {
     /// Full verification: signatures + stamp.
     pub fn verify(&self, min_stamp_bits: u32) -> Result<Payload, CoreError> {
         let p = self.verify_signatures()?;
-        if self.stamp_bits() < self.required_bits(min_stamp_bits) { return Err(CoreError::WeakStamp); }
+        if self.stamp_bits() < self.required_bits(min_stamp_bits) {
+            return Err(CoreError::WeakStamp);
+        }
         Ok(p)
     }
 }
@@ -289,8 +403,16 @@ impl Envelope {
 mod tests {
     use super::*;
     fn listing() -> Payload {
-        Payload::Listing(Listing { kind: ListingKind::Offer, title: "Old bicycle".into(), desc: "works".into(),
-            price_hint: "negotiable".into(), category: "bikes".into(), expiry: 0, image_hashes: vec![], created: 0 })
+        Payload::Listing(Listing {
+            kind: ListingKind::Offer,
+            title: "Old bicycle".into(),
+            desc: "works".into(),
+            price_hint: "negotiable".into(),
+            category: "bikes".into(),
+            expiry: 0,
+            image_hashes: vec![],
+            created: 0,
+        })
     }
     #[test]
     fn seal_and_verify() {
@@ -309,17 +431,25 @@ mod tests {
     }
     #[test]
     fn hybrid_both_required() {
-        let a = Identity::generate(); let b = Identity::generate();
+        let a = Identity::generate();
+        let b = Identity::generate();
         let mut e = a.seal(&listing(), 0);
         let other = b.seal(&listing(), 0);
         // swap in a valid ed25519 sig from another key -> rejected
-        let mut e2 = e.clone(); e2.sig = other.sig.clone();
-        assert!(matches!(e2.verify_signatures(), Err(CoreError::BadSignature)));
+        let mut e2 = e.clone();
+        e2.sig = other.sig.clone();
+        assert!(matches!(
+            e2.verify_signatures(),
+            Err(CoreError::BadSignature)
+        ));
         // corrupt ML-DSA sig only -> rejected even though ed25519 is valid
-        let mut s = hex::decode(&e.pq_sig).unwrap(); s[100] ^= 1; e.pq_sig = hex::encode(s);
+        let mut s = hex::decode(&e.pq_sig).unwrap();
+        s[100] ^= 1;
+        e.pq_sig = hex::encode(s);
         assert!(e.verify_signatures().is_err());
         // swap pq key -> rejected
-        let mut e3 = a.seal(&listing(), 0); e3.pq_pub = b.pq_public_hex();
+        let mut e3 = a.seal(&listing(), 0);
+        e3.pq_pub = b.pq_public_hex();
         assert!(e3.verify_signatures().is_err());
     }
     #[test]
@@ -336,20 +466,34 @@ mod tests {
     fn weak_stamp_rejected() {
         let e = Identity::generate().seal(&listing(), 0);
         // Very unlikely that nonce 0 already satisfies 24 bits.
-        if e.stamp_bits() < 24 { assert!(matches!(e.verify(24), Err(CoreError::WeakStamp))); }
+        if e.stamp_bits() < 24 {
+            assert!(matches!(e.verify(24), Err(CoreError::WeakStamp)));
+        }
     }
     #[test]
     fn bad_score_and_filter() {
-        let r = Payload::Rating(Rating { listing_id: "x".into(), seller: "s".into(), receipt_id: "r".into(), score: 6, comment: "".into() });
+        let r = Payload::Rating(Rating {
+            listing_id: "x".into(),
+            seller: "s".into(),
+            receipt_id: "r".into(),
+            score: 6,
+            comment: "".into(),
+        });
         assert!(r.validate().is_err());
         let mut l = listing();
-        if let Payload::Listing(ref mut x) = l { x.title = "cheap firearms".into(); }
+        if let Payload::Listing(ref mut x) = l {
+            x.title = "cheap firearms".into();
+        }
         assert!(l.validate().is_err());
     }
     #[test]
     fn claim_needs_stronger_stamp() {
         let id = Identity::generate();
-        let c = Payload::Claim(Claim { accept_id: "a".into(), reason: "never arrived".into(), created: 0 });
+        let c = Payload::Claim(Claim {
+            accept_id: "a".into(),
+            reason: "never arrived".into(),
+            created: 0,
+        });
         let e = id.seal(&c, 6);
         assert!(e.verify(6).is_ok());
         assert!(e.stamp_bits() >= 10);
