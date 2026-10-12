@@ -59,7 +59,7 @@ pub async fn run(listen: Multiaddr, mut cmds: mpsc::Receiver<Command>, events: m
         tokio::select! {
             cmd = cmds.recv() => match cmd {
                 None => return Ok(()),
-                Some(Command::Dial(a)) => { swarm.dial(a)?; }
+                Some(Command::Dial(a)) => { if let Err(e) = swarm.dial(a) { eprintln!("dial error: {e}"); } }
                 Some(Command::Publish(env)) => {
                     let _ = swarm.behaviour_mut().gossipsub.publish(topic.clone(), serde_json::to_vec(&env)?);
                 }

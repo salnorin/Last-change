@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/ledger", "crates/reputation", "crates/net", "crates/node"]
+members = ["crates/circuit-pow", "crates/core", "crates/ledger", "crates/reputation", "crates/net", "crates/node"]
 
 [workspace.package]
 version = "0.1.0"
@@ -23,6 +23,8 @@ futures = "0.3"
 clap = { version = "4", features = ["derive"] }
 libp2p = { version = "0.54", features = ["tokio", "tcp", "noise", "yamux", "gossipsub", "kad", "identify", "macros"] }
 tempfile = "3"
+axum = { version = "0.7", features = ["ws"] }
+circuit-pow = { path = "crates/circuit-pow" }
 lc-core = { path = "crates/core", package = "lastchange-core" }
 lc-ledger = { path = "crates/ledger", package = "lastchange-ledger" }
 lc-reputation = { path = "crates/reputation", package = "lastchange-reputation" }

@@ -200,20 +200,17 @@ fn signing_bytes(author: &str, body: &str, nonce: u64) -> Vec<u8> {
     format!("lastchange-v1|{author}|{nonce}|{body}").into_bytes()
 }
 
-fn leading_zero_bits(h: &[u8]) -> u32 {
-    let mut n = 0;
-    for b in h {
-        if *b == 0 { n += 8 } else { n += b.leading_zeros(); break; }
-    }
-    n
+/// The anti-spam stamp uses circuit-pow, seeded from (author, body).
+fn stamp_seed(author: &str, body: &str) -> [u8; 32] {
+    circuit_pow::seed_from(format!("lastchange-stamp-v1|{author}|{body}").as_bytes())
 }
 
 fn stamp_bits(author: &str, body: &str, nonce: u64) -> u32 {
-    leading_zero_bits(&Sha256::digest(signing_bytes(author, body, nonce)))
+    circuit_pow::work_bits(stamp_seed(author, body), nonce)
 }
 
 fn find_stamp(author: &str, body: &str, bits: u32) -> u64 {
-    (0u64..).find(|n| stamp_bits(author, body, *n) >= bits).unwrap()
+    circuit_pow::solve(stamp_seed(author, body), bits)
 }
 
 impl Envelope {

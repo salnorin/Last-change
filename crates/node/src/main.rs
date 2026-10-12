@@ -8,6 +8,8 @@ use lc_ledger::Ledger;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod api;
+
 #[derive(Parser)]
 #[command(name = "lastchange", about = "Pseudonymous P2P classifieds with reputation.")]
 struct Cli {
@@ -57,6 +59,12 @@ enum Cmd {
     Block { key: String },
     /// Show ledger stats and Merkle root.
     Status,
+    /// Run P2P node + local HTTP/JSON/WebSocket API and web app.
+    Serve {
+        #[arg(long, default_value = "127.0.0.1:8080")] http: String,
+        #[arg(long, default_value = "/ip4/0.0.0.0/tcp/0")] listen: String,
+        #[arg(long)] dial: Vec<String>,
+    },
     /// Run a P2P node: sync local entries and receive peers' entries.
     Peers {
         #[arg(long, default_value = "/ip4/0.0.0.0/tcp/0")] listen: String,
@@ -64,7 +72,7 @@ enum Cmd {
     },
 }
 
-fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() }
+pub(crate) fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() }
 
 fn load_id(dir: &std::path::Path) -> Result<Identity> {
     let b = std::fs::read(dir.join("key")).context("no key; run `lastchange keygen`")?;
@@ -72,7 +80,7 @@ fn load_id(dir: &std::path::Path) -> Result<Identity> {
     Ok(Identity::from_secret_bytes(&a))
 }
 
-fn items(led: &Ledger) -> Result<Vec<lc_reputation::Item>> {
+pub(crate) fn items(led: &Ledger) -> Result<Vec<lc_reputation::Item>> {
     Ok(led.all()?.into_iter().map(|e| {
         let time = match &e.payload { Payload::Listing(l) => l.created, Payload::DealAccept(a) => a.created,
             Payload::DealStep(s) => s.created, Payload::Claim(c) => c.created, _ => now() };
@@ -161,11 +169,40 @@ async fn main() -> Result<()> {
         Cmd::Report { target_id, reason } => { seal_add(Payload::Report(Report { target_id, reason }))?; }
         Cmd::Block { key } => { led.block(&key)?; println!("blocked {key}"); }
         Cmd::Status => println!("entries {}\nmerkle_root {}", led.len()?, led.merkle_root()?),
+        Cmd::Serve { http, listen, dial } => {
+            use lc_net::{Command, Event};
+            use std::sync::{Arc, Mutex};
+            let (ctx, crx) = tokio::sync::mpsc::channel(256);
+            let (etx, mut erx) = tokio::sync::mpsc::channel(256);
+            tokio::spawn(async move { if let Err(e) = lc_net::run(listen.parse().unwrap(), crx, etx).await { eprintln!("net error: {e:?}"); } });
+            for d in dial { ctx.send(Command::Dial(d.parse()?)).await?; }
+            let st = api::AppState { ledger: Arc::new(Mutex::new(led)), id: Arc::new(load_id(&cli.dir)?), stamp_bits: cli.stamp_bits,
+                net: ctx.clone(), events: tokio::sync::broadcast::channel(256).0 };
+            let tcp = tokio::net::TcpListener::bind(&http).await?;
+            println!("http http://{}", tcp.local_addr()?);
+            let app = api::router(st.clone());
+            tokio::spawn(async move { axum::serve(tcp, app).await });
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+            let all = |st: &api::AppState| st.ledger.lock().unwrap().all().map(|v| v.into_iter().map(|e| e.env).collect::<Vec<_>>());
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => for e in all(&st)? { ctx.send(Command::Publish(e)).await?; },
+                    ev = erx.recv() => match ev {
+                        None => break,
+                        Some(Event::Listening(a)) => println!("listening {a}"),
+                        Some(Event::Connected(p)) => { println!("peer {p}"); for e in all(&st)? { ctx.send(Command::Publish(e)).await?; } }
+                        Some(Event::Received(env)) => match st.ingest(env.clone()).await {
+                            Ok(true) => println!("+ {}", env.id()), Ok(false) => {}, Err(e) => eprintln!("rejected: {e}"),
+                        },
+                    }
+                }
+            }
+        }
         Cmd::Peers { listen, dial } => {
             use lc_net::{Command, Event};
             let (ctx, crx) = tokio::sync::mpsc::channel(256);
             let (etx, mut erx) = tokio::sync::mpsc::channel(256);
-            tokio::spawn(lc_net::run(listen.parse()?, crx, etx));
+            tokio::spawn(async move { if let Err(e) = lc_net::run(listen.parse().unwrap(), crx, etx).await { eprintln!("net error: {e:?}"); } });
             for d in dial { ctx.send(Command::Dial(d.parse()?)).await?; }
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {

@@ -131,3 +131,10 @@ users.
 
 ## Authors (نویسندگان)
 - **Salar Khanbaba (salnorin)**: creator.
+
+## Appendix: circuit-pow (implemented, anti-spam only)
+`crates/circuit-pow` implements §4b at small scale: 256–512 integer gates, forward-only branches, a 16 KiB
+scratchpad, a multi-hash chain of SHA-256/SHA-512/SHA3-256/BLAKE3 permuted per seed, `lwma_next`, and a pinned
+cross-platform test vector. Measured at about 7 µs/hash (about 140k hashes/s), so a 16-bit stamp takes about 0.5 s
+and verification about 6 µs. Today it is used **only** as the anti-spam stamp. It has no chain, rewards or value.
+A future EST consensus would scale it up (float ops, larger scratchpad) per this document, subject to §12.
