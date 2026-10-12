@@ -66,6 +66,7 @@ pub fn run(dir: &Path, lang: Option<&str>, json: bool) -> Result<()> {
             None => return Ok(()),
         },
     };
+    crate::offer_migration(dir, lang)?;
     loop {
         println!("\n{}", t(lang, "title"));
         for k in ["top1", "top2", "top3", "top4", "top5", "top6"] {
@@ -108,7 +109,7 @@ pub fn run(dir: &Path, lang: Option<&str>, json: bool) -> Result<()> {
     }
 }
 
-fn yes(s: &str) -> bool {
+pub(crate) fn yes(s: &str) -> bool {
     let s = s.trim().to_lowercase();
     [
         "y", "yes", "j", "ja", "s", "si", "sí", "o", "oui", "e", "evet", "д", "да", "是", "ن",
@@ -143,8 +144,7 @@ fn wallet_menu(dir: &Path, lang: &str, json: bool, input: &mut impl BufRead) -> 
                                 continue;
                             }
                         }
-                        println!("{}", t(lang, "warn"));
-                        let r = crate::wallet_new(dir, n, false);
+                        let r = crate::wallet_new(dir, n, lang);
                         if r.is_ok() {
                             println!("{}", t(lang, "warn"));
                             let Some(a) = ask(lang, "key_q", input)? else {
@@ -171,7 +171,7 @@ fn wallet_menu(dir: &Path, lang: &str, json: bool, input: &mut impl BufRead) -> 
                 };
                 Identity::from_mnemonic(&w)
                     .map_err(anyhow::Error::from)
-                    .and_then(|id| crate::save_wallet(dir, &id, false))
+                    .and_then(|id| crate::save_wallet(dir, &id))
             }
             "3" => match crate::load_id(dir) {
                 Ok(id) => {
@@ -200,14 +200,18 @@ fn wallet_menu(dir: &Path, lang: &str, json: bool, input: &mut impl BufRead) -> 
     }
 }
 
+/// Own pseudonym without asking for the passphrase (public field of the keystore).
+fn own_pseudonym(dir: &Path) -> Option<String> {
+    crate::wallet_pseudonym(dir).or_else(|| crate::load_id(dir).ok().map(|i| i.pseudonym()))
+}
+
 /// web-app-ready: delete flow. Warn, require last 4 chars of the pseudonym, then move
 /// the folder to a backup. Returns Ok(true) if moved.
 fn delete_flow(dir: &Path, lang: &str, json: bool, input: &mut impl BufRead) -> Result<bool> {
-    let Ok(id) = crate::load_id(dir) else {
+    let Some(p) = own_pseudonym(dir) else {
         println!("{}", t(lang, "no_wallet"));
         return Ok(false);
     };
-    let p = id.pseudonym();
     let code = &p[p.len() - 4..];
     println!("{}\n{p}", t(lang, "del_warn"));
     let Some(a) = ask(lang, "del_q", input)? else {
@@ -235,9 +239,9 @@ fn delete_flow(dir: &Path, lang: &str, json: bool, input: &mut impl BufRead) -> 
 fn account(dir: &Path, lang: &str, json: bool, query: Option<String>) -> Result<()> {
     let (pseudonym, pubkey) = match &query {
         Some(q) => (q.clone(), q.clone()),
-        None => match crate::load_id(dir) {
-            Ok(id) => (id.pseudonym(), id.public_hex()),
-            Err(_) => {
+        None => match own_pseudonym(dir) {
+            Some(p) => (p.clone(), p),
+            None => {
                 println!("{}", t(lang, "no_wallet"));
                 return Ok(());
             }

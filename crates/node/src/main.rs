@@ -166,6 +166,8 @@ pub(crate) fn now() -> u64 {
         .as_secs()
 }
 
+/// Passphrase from LASTCHANGE_PASSPHRASE or a hidden prompt (rpassword; works in Termux).
+/// `confirm` asks twice. Empty or short passphrases are rejected by the keystore (min 8).
 fn passphrase(confirm: bool) -> Result<String> {
     if let Ok(p) = std::env::var("LASTCHANGE_PASSPHRASE") {
         return Ok(p);
@@ -181,8 +183,19 @@ fn keystore_path(dir: &std::path::Path) -> PathBuf {
     dir.join("keystore.json")
 }
 
+/// Legacy plaintext seed file (read only for migration; never written).
 fn seed_path(dir: &std::path::Path) -> PathBuf {
     dir.join("seed.json")
+}
+
+fn read_legacy_seed(dir: &std::path::Path) -> Result<Identity> {
+    let s = std::fs::read_to_string(seed_path(dir))
+        .context("no wallet; run `lastchange wallet new`")?;
+    let v: serde_json::Value = serde_json::from_str(&s)?;
+    let m: [u8; 32] = hex::decode(v["master"].as_str().unwrap_or_default())?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("bad seed.json"))?;
+    Ok(Identity::from_master(&m))
 }
 
 pub(crate) fn load_id(dir: &std::path::Path) -> Result<Identity> {
@@ -191,13 +204,17 @@ pub(crate) fn load_id(dir: &std::path::Path) -> Result<Identity> {
         let ks: keystore::Keystore = serde_json::from_str(&s)?;
         return Ok(ks.decrypt(&passphrase(false)?)?);
     }
-    let s = std::fs::read_to_string(seed_path(dir))
-        .context("no wallet; run `lastchange wallet new`")?;
-    let v: serde_json::Value = serde_json::from_str(&s)?;
-    let m: [u8; 32] = hex::decode(v["master"].as_str().unwrap_or_default())?
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("bad seed.json"))?;
-    Ok(Identity::from_master(&m))
+    if seed_path(dir).exists() {
+        eprintln!("WARNING: legacy plaintext seed.json in use; run `lastchange wallet migrate`.");
+    }
+    read_legacy_seed(dir)
+}
+
+/// Public pseudonym of the stored wallet without decrypting (keystore stores it in clear).
+pub(crate) fn wallet_pseudonym(dir: &std::path::Path) -> Option<String> {
+    let s = std::fs::read_to_string(keystore_path(dir)).ok()?;
+    let ks: keystore::Keystore = serde_json::from_str(&s).ok()?;
+    Some(ks.pseudonym)
 }
 
 fn write_private(p: &std::path::Path, data: &str) -> Result<()> {
@@ -210,27 +227,30 @@ fn write_private(p: &std::path::Path, data: &str) -> Result<()> {
     Ok(())
 }
 
-/// Save the identity: encrypted keystore if `encrypt`, else plaintext seed.json (chmod 600).
-pub(crate) fn save_wallet(dir: &std::path::Path, id: &Identity, encrypt: bool) -> Result<()> {
-    if keystore_path(dir).exists() || seed_path(dir).exists() {
+/// Overwrite a file with 0x00, then 0xFF, fsync, and remove it.
+/// Best effort: flash storage / copy-on-write filesystems may keep old blocks.
+fn shred(p: &std::path::Path) -> Result<()> {
+    use std::io::{Seek, Write};
+    let len = std::fs::metadata(p)?.len() as usize;
+    let mut f = std::fs::OpenOptions::new().write(true).open(p)?;
+    for pass in 0..2 {
+        let buf = vec![if pass == 0 { 0x00u8 } else { 0xFFu8 }; len];
+        f.seek(std::io::SeekFrom::Start(0))?;
+        f.write_all(&buf)?;
+        f.sync_all()?;
+    }
+    drop(f);
+    std::fs::remove_file(p)?;
+    Ok(())
+}
+
+/// Save the identity ONLY as an encrypted Argon2id keystore (passphrase required).
+pub(crate) fn save_wallet(dir: &std::path::Path, id: &Identity) -> Result<()> {
+    if wallet_exists(dir) {
         bail!("a wallet already exists in {}", dir.display());
     }
-    if encrypt {
-        let ks = keystore::Keystore::encrypt(id, &passphrase(true)?)?;
-        write_private(&keystore_path(dir), &serde_json::to_string_pretty(&ks)?)?;
-    } else {
-        write_private(
-            &seed_path(dir),
-            &serde_json::to_string_pretty(&serde_json::json!({
-                "version": 1, "master": hex::encode(id.master_bytes()), "pseudonym": id.pseudonym(),
-                "warning": "UNENCRYPTED. Anyone with this file controls this identity. Back up your words instead."
-            }))?,
-        )?;
-        eprintln!(
-            "WARNING: seed stored UNENCRYPTED at {} (chmod 600). Use --passphrase to encrypt.",
-            seed_path(dir).display()
-        );
-    }
+    let ks = keystore::Keystore::encrypt(id, &passphrase(true)?)?;
+    write_private(&keystore_path(dir), &serde_json::to_string_pretty(&ks)?)?;
     let chain = LocalChain::from_genesis();
     chain.save(dir)?;
     show_id(id);
@@ -239,20 +259,72 @@ pub(crate) fn save_wallet(dir: &std::path::Path, id: &Identity, encrypt: bool) -
     Ok(())
 }
 
-pub(crate) fn wallet_new(dir: &std::path::Path, words: usize, encrypt: bool) -> Result<()> {
+/// Encrypt a legacy seed.json into the keystore, then shred seed.json.
+pub(crate) fn wallet_migrate(dir: &std::path::Path) -> Result<()> {
+    if !seed_path(dir).exists() {
+        bail!("no legacy seed.json in {}", dir.display());
+    }
+    if !keystore_path(dir).exists() {
+        let id = read_legacy_seed(dir)?;
+        let ks = keystore::Keystore::encrypt(&id, &passphrase(true)?)?;
+        write_private(&keystore_path(dir), &serde_json::to_string_pretty(&ks)?)?;
+        // verify before destroying the plaintext copy
+        let back: keystore::Keystore =
+            serde_json::from_str(&std::fs::read_to_string(keystore_path(dir))?)?;
+        if back.pseudonym != id.pseudonym() {
+            bail!("keystore verification failed; seed.json kept");
+        }
+    }
+    shred(&seed_path(dir))?;
+    println!(
+        "seed.json encrypted into {} and securely deleted",
+        keystore_path(dir).display()
+    );
+    Ok(())
+}
+
+/// If a legacy seed.json exists, offer migration (interactive terminals only).
+pub(crate) fn offer_migration(dir: &std::path::Path, lang: &str) -> Result<()> {
+    use std::io::IsTerminal;
+    if !seed_path(dir).exists() {
+        return Ok(());
+    }
+    eprintln!("{}", i18n::t(lang, "legacy_warn"));
+    if !std::io::stdin().is_terminal() {
+        return Ok(());
+    }
+    eprint!("{}", i18n::t(lang, "legacy_q"));
+    let mut a = String::new();
+    std::io::stdin().read_line(&mut a)?;
+    if menu::yes(&a) {
+        wallet_migrate(dir)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn wallet_new(dir: &std::path::Path, words: usize, lang: &str) -> Result<()> {
     if ![12, 15, 18, 21, 24].contains(&words) {
         bail!("--words must be a BIP39 length: 12, 15, 18, 21 or 24 (24 recommended)");
     }
-    if keystore_path(dir).exists() || seed_path(dir).exists() {
+    if wallet_exists(dir) {
         bail!("a wallet already exists in {}", dir.display());
     }
+    // Ask for the passphrase BEFORE showing words, so a typo cannot lose a shown-once phrase.
+    let pass = passphrase(true)?;
     let (mnemonic, id) = Identity::generate_mnemonic(words)?;
+    let ks = keystore::Keystore::encrypt(&id, &pass)?;
+    println!("{}", i18n::t(lang, "paper_warn"));
     println!("================ WRITE THESE WORDS DOWN ================");
     println!("{mnemonic}");
     println!("=========================================================");
-    println!("They are shown only once. Anyone with them controls this identity.");
+    println!("{}", i18n::t(lang, "paper_warn"));
     println!("Restore with: lastchange wallet restore \"<words>\"");
-    save_wallet(dir, &id, encrypt)
+    write_private(&keystore_path(dir), &serde_json::to_string_pretty(&ks)?)?;
+    let chain = LocalChain::from_genesis();
+    chain.save(dir)?;
+    show_id(&id);
+    println!("chain tip  {} (height {})", chain.tip_hash, chain.height);
+    Ok(())
 }
 
 /// True if a seed or keystore exists in `dir`.
@@ -265,6 +337,12 @@ pub(crate) fn wallet_exists(dir: &std::path::Path) -> bool {
 pub(crate) fn wallet_delete(dir: &std::path::Path) -> Result<(PathBuf, Vec<String>)> {
     if !wallet_exists(dir) {
         bail!("no wallet in {}", dir.display());
+    }
+    if seed_path(dir).exists() {
+        if !keystore_path(dir).exists() {
+            bail!("legacy plaintext seed.json found: run `lastchange wallet migrate` first so the backup is encrypted");
+        }
+        shred(&seed_path(dir))?;
     }
     let mut files: Vec<String> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
@@ -359,7 +437,7 @@ enum WalletCmd {
     New {
         #[arg(long, default_value_t = 12)]
         words: usize,
-        /// Encrypt the stored seed with a passphrase (prompt or LASTCHANGE_PASSPHRASE).
+        /// Deprecated no-op: the keystore is always encrypted now.
         #[arg(long)]
         passphrase: bool,
     },
@@ -371,6 +449,8 @@ enum WalletCmd {
     },
     /// Show public keys and pseudonym.
     Show,
+    /// Encrypt a legacy plaintext seed.json into the keystore and securely delete it.
+    Migrate,
     /// Move the wallet folder to `<dir>.deleted-<unix time>` (backup, never erased).
     Delete {
         /// Required: confirm you have your words.
@@ -385,6 +465,17 @@ enum WalletCmd {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     std::fs::create_dir_all(&cli.dir)?;
+    let lang = cli.lang.as_deref().unwrap_or("en");
+    let menu_mode = matches!(cli.cmd, None | Some(Cmd::Wallet { cmd: None }));
+    let migrating = matches!(
+        cli.cmd,
+        Some(Cmd::Wallet {
+            cmd: Some(WalletCmd::Migrate)
+        })
+    );
+    if !menu_mode && !migrating {
+        offer_migration(&cli.dir, lang)?;
+    }
     let led = Ledger::open(&cli.dir.join("ledger.db"), cli.stamp_bits)?;
     let seal_add = |p: Payload| -> Result<String> {
         let env = load_id(&cli.dir)?.seal(&p, cli.stamp_bits);
@@ -399,14 +490,23 @@ async fn main() -> Result<()> {
         Some(c) => c,
     };
     match cmd {
-        Cmd::Keygen => wallet_new(&cli.dir, 12, false)?,
+        Cmd::Keygen => wallet_new(&cli.dir, 12, lang)?,
         Cmd::Wallet { cmd: None } => unreachable!("handled by menu"),
         Cmd::Wallet {
             cmd: Some(WalletCmd::New { words, passphrase }),
-        } => wallet_new(&cli.dir, words, passphrase)?,
+        } => {
+            let _ = passphrase;
+            wallet_new(&cli.dir, words, lang)?
+        }
         Cmd::Wallet {
             cmd: Some(WalletCmd::Restore { words, passphrase }),
-        } => save_wallet(&cli.dir, &Identity::from_mnemonic(&words)?, passphrase)?,
+        } => {
+            let _ = passphrase;
+            save_wallet(&cli.dir, &Identity::from_mnemonic(&words)?)?
+        }
+        Cmd::Wallet {
+            cmd: Some(WalletCmd::Migrate),
+        } => wallet_migrate(&cli.dir)?,
         Cmd::Wallet {
             cmd: Some(WalletCmd::Delete { yes }),
         } => {
@@ -670,4 +770,57 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod wallet_tests {
+    use super::*;
+
+    fn tmp() -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "lc-wt-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn new_wallet_never_writes_plaintext_seed_and_migration_shreds_it() {
+        std::env::set_var("LASTCHANGE_PASSPHRASE", "test-passphrase-123");
+        let d = tmp();
+        wallet_new(&d, 12, "en").unwrap();
+        assert!(!seed_path(&d).exists(), "seed.json must never be created");
+        assert!(keystore_path(&d).exists());
+        let ks = std::fs::read_to_string(keystore_path(&d)).unwrap();
+        assert!(ks.contains("argon2id"));
+        let p = load_id(&d).unwrap().pseudonym();
+        let restored = tmp();
+        save_wallet(&restored, &Identity::generate()).unwrap();
+        assert!(!seed_path(&restored).exists());
+
+        // legacy migration
+        let l = tmp();
+        let id = Identity::generate();
+        std::fs::write(
+            seed_path(&l),
+            serde_json::json!({"master": hex::encode(id.master_bytes())}).to_string(),
+        )
+        .unwrap();
+        wallet_migrate(&l).unwrap();
+        assert!(!seed_path(&l).exists());
+        assert_eq!(load_id(&l).unwrap().pseudonym(), id.pseudonym());
+
+        // delete backup contains no plaintext seed
+        let (to, files) = wallet_delete(&d).unwrap();
+        assert!(!files.iter().any(|f| f == "seed.json"));
+        assert_eq!(wallet_pseudonym(&to).unwrap(), p);
+        for x in [d, restored, l, to] {
+            let _ = std::fs::remove_dir_all(x);
+        }
+    }
 }
