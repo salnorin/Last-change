@@ -30,3 +30,10 @@ Libraries: RustCrypto `ml-dsa`, `ml-kem`, `ed25519-dalek`, `x25519-dalek`, `argo
 Phones and browsers sign (`Identity::sign`, nonce = 0) and send the envelope to `POST /api/stamp`. The node
 verifies both signatures, computes the circuit-pow stamp, and stores and publishes it. The envelope id does not
 depend on the stamp nonce.
+
+## Wallet words (BIP39)
+`lastchange wallet new` prints **12 BIP39 words** once (use `--words 24`, recommended for post-quantum
+margin). Write them down. `lastchange wallet restore "<words>"` restores the same identity. All keys (Ed25519,
+ML-DSA-65, X25519, ML-KEM-768) are derived from the BIP39 seed with domain-separated HKDF. By default the seed is
+stored **unencrypted** in `seed.json` (chmod 600), so it works without a prompt in Termux. Add `--passphrase` to
+encrypt it (Argon2id; it reads `LASTCHANGE_PASSPHRASE` or prompts).

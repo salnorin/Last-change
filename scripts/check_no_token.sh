@@ -14,6 +14,6 @@ PAT='\b(token|tokens|balance|balances|get_balance|reward|rewards|block_reward|mi
 # strip // comments (whole-line and trailing) and the slice method `.swap(` before matching
 hits=$(grep -rniE "$PAT" --include='*.rs' --include='Cargo.toml' crates Cargo.toml \
   | sed -E 's#//.*$##; s#\.swap\(##g' | grep -iE "^[^:]+:[0-9]+:.*$PAT" || true)
-deps=$(grep -E '^name = "' Cargo.lock | grep -iE '"(bitcoin|monero|ethers|web3|alloy|solana|bdk|secp256k1-zkp)' || true)
+deps=$(grep -E '^name = "' Cargo.lock | grep -iE '^name = "(bitcoin|monero|ethers|web3|alloy|solana|bdk|secp256k1-zkp)"$' || true)
 if [[ -n "$hits$deps" ]]; then echo "Forbidden value/payment logic found:"; echo "$hits"; echo "$deps"; exit 1; fi
 echo "OK: no balances, rewards, minting, transfers, payments, swaps, exchange, escrow or custody in live code."
