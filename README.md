@@ -39,8 +39,7 @@ Android/Termux: [docs/TERMUX.md](docs/TERMUX.md). Prebuilt binaries come from th
 
 ```sh
 cargo build --release && B=target/release/lastchange
-export LASTCHANGE_PASSPHRASE=...   # or enter it when prompted
-$B wallet new
+$B wallet new --words 24          # write the words down
 $B post offer --title "Oil painting" --category art --image <content-hash>
 $B serve --http 127.0.0.1:8080             # web app at http://127.0.0.1:8080
 $B --dir node2 keygen && $B --dir node2 serve --http 127.0.0.1:8081 --dial /ip4/127.0.0.1/tcp/<port>
@@ -61,3 +60,14 @@ blocks and circuit details (gate count, hash order) at http://127.0.0.1:8090.
 **Salar Khanbaba (salnorin)**. See also [MISSION.md](MISSION.md) and [docs/FUTURE.md](docs/FUTURE.md).
 
 *For Satoshi Nakamoto, who stepped out of the light so that no one would need to be trusted, and showed that power shared by everyone belongs to no one.*
+
+## Wallet words (BIP39)
+`lastchange wallet new` prints **12 BIP39 words** once (use `--words 24`, recommended for post-quantum
+margin). Write them down. `lastchange wallet restore "<words>"` restores the same identity. All keys (Ed25519,
+ML-DSA-65, X25519, ML-KEM-768) are derived from the BIP39 seed with domain-separated HKDF. By default the seed is
+stored **unencrypted** in `seed.json` (chmod 600), so it works without a prompt in Termux. Add `--passphrase` to
+encrypt it (Argon2id; it reads `LASTCHANGE_PASSPHRASE` or prompts).
+
+Interactive menu: run `lastchange` with no arguments (or `lastchange wallet`). Choose 1) new wallet, 2) restore
+from words, 3) show info, 4) exit. Menu text is Persian by default; use `--lang en` for English. Word counts:
+12 / 15 / 18 / 24. 16 is not a valid BIP39 length. 24 is recommended.

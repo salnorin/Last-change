@@ -68,6 +68,26 @@ impl Identity {
         let pq = ml_dsa::SigningKey::<MlDsa65>::from_seed(&seed.into());
         Self { master: *m, ed, pq }
     }
+    /// Generate a new BIP39 mnemonic (12 or 24 English words) and its identity.
+    pub fn generate_mnemonic(words: usize) -> Result<(String, Self), CoreError> {
+        let m = bip39::Mnemonic::generate_in(bip39::Language::English, words)
+            .map_err(|e| CoreError::Crypto(e.to_string()))?;
+        let id = Self::from_mnemonic(&m.to_string())?;
+        Ok((m.to_string(), id))
+    }
+    /// Restore from BIP39 words. Master = HKDF-SHA256(bip39_seed, "lastchange-bip39-v1").
+    /// All keys (Ed25519, ML-DSA-65, X25519, ML-KEM-768) are derived from the master with
+    /// domain-separated HKDF labels.
+    pub fn from_mnemonic(words: &str) -> Result<Self, CoreError> {
+        let m = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, words.trim())
+            .map_err(|e| CoreError::Crypto(format!("invalid mnemonic: {e}")))?;
+        let seed = m.to_seed("");
+        let mut master = [0u8; 32];
+        hkdf::Hkdf::<Sha256>::new(Some(b"lastchange-bip39-v1"), &seed)
+            .expand(b"master", &mut master)
+            .expect("hkdf");
+        Ok(Self::from_master(&master))
+    }
     pub fn master_bytes(&self) -> [u8; 32] {
         self.master
     }
@@ -497,6 +517,23 @@ mod tests {
         let e = id.seal(&c, 6);
         assert!(e.verify(6).is_ok());
         assert!(e.stamp_bits() >= 10);
+    }
+    #[test]
+    fn mnemonic_roundtrip() {
+        for n in [12, 24] {
+            let (words, id) = Identity::generate_mnemonic(n).unwrap();
+            assert_eq!(words.split_whitespace().count(), n);
+            let r = Identity::from_mnemonic(&words).unwrap();
+            assert_eq!(r.pseudonym(), id.pseudonym());
+            assert_eq!(r.pq_public_hex(), id.pq_public_hex());
+        }
+        assert!(Identity::from_mnemonic("abandon abandon").is_err());
+        // fixed vector: deterministic derivation
+        let v = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        assert_eq!(
+            Identity::from_mnemonic(v).unwrap().pseudonym(),
+            Identity::from_mnemonic(v).unwrap().pseudonym()
+        );
     }
     #[test]
     fn key_roundtrip() {

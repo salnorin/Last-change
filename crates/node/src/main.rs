@@ -1,5 +1,6 @@
 //! `lastchange` CLI. Data lives in a local directory (default ./.lastchange):
-//! `key` (32-byte ed25519 secret, nothing else) and `ledger.db`.
+//! `seed.json` or `keystore.json` (identity seed only), `chain.json` and `ledger.db`.
+//! Running with no subcommand opens an interactive wallet menu.
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -13,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod api;
 #[cfg(feature = "full")]
 mod explorer;
+mod menu;
 
 #[derive(Parser)]
 #[command(
@@ -24,8 +26,11 @@ struct Cli {
     dir: PathBuf,
     #[arg(long, default_value_t = DEFAULT_STAMP_BITS, global = true)]
     stamp_bits: u32,
+    /// Menu language: fa (default) or en.
+    #[arg(long, default_value = "fa", global = true)]
+    lang: String,
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -37,7 +42,7 @@ enum Cmd {
     /// Identity keystore: hybrid Ed25519 + ML-DSA-65 keys, Argon2id-encrypted. No balances.
     Wallet {
         #[command(subcommand)]
-        cmd: WalletCmd,
+        cmd: Option<WalletCmd>,
     },
     /// Encrypt a deal message to a peer (hybrid X25519 + ML-KEM-768).
     MsgSeal {
@@ -171,35 +176,81 @@ fn keystore_path(dir: &std::path::Path) -> PathBuf {
     dir.join("keystore.json")
 }
 
-fn load_id(dir: &std::path::Path) -> Result<Identity> {
-    let s = std::fs::read_to_string(keystore_path(dir))
-        .context("no keystore; run `lastchange wallet new`")?;
-    let ks: keystore::Keystore = serde_json::from_str(&s)?;
-    Ok(ks.decrypt(&passphrase(false)?)?)
+fn seed_path(dir: &std::path::Path) -> PathBuf {
+    dir.join("seed.json")
 }
 
-fn wallet_new(dir: &std::path::Path) -> Result<()> {
-    let p = keystore_path(dir);
-    if p.exists() {
-        bail!("keystore already exists at {}", p.display());
+pub(crate) fn load_id(dir: &std::path::Path) -> Result<Identity> {
+    if keystore_path(dir).exists() {
+        let s = std::fs::read_to_string(keystore_path(dir))?;
+        let ks: keystore::Keystore = serde_json::from_str(&s)?;
+        return Ok(ks.decrypt(&passphrase(false)?)?);
     }
-    let id = Identity::generate();
-    let ks = keystore::Keystore::encrypt(&id, &passphrase(true)?)?;
-    std::fs::write(&p, serde_json::to_string_pretty(&ks)?)?;
+    let s = std::fs::read_to_string(seed_path(dir))
+        .context("no wallet; run `lastchange wallet new`")?;
+    let v: serde_json::Value = serde_json::from_str(&s)?;
+    let m: [u8; 32] = hex::decode(v["master"].as_str().unwrap_or_default())?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("bad seed.json"))?;
+    Ok(Identity::from_master(&m))
+}
+
+fn write_private(p: &std::path::Path, data: &str) -> Result<()> {
+    std::fs::write(p, data)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+/// Save the identity: encrypted keystore if `encrypt`, else plaintext seed.json (chmod 600).
+pub(crate) fn save_wallet(dir: &std::path::Path, id: &Identity, encrypt: bool) -> Result<()> {
+    if keystore_path(dir).exists() || seed_path(dir).exists() {
+        bail!("a wallet already exists in {}", dir.display());
+    }
+    if encrypt {
+        let ks = keystore::Keystore::encrypt(id, &passphrase(true)?)?;
+        write_private(&keystore_path(dir), &serde_json::to_string_pretty(&ks)?)?;
+    } else {
+        write_private(
+            &seed_path(dir),
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "version": 1, "master": hex::encode(id.master_bytes()), "pseudonym": id.pseudonym(),
+                "warning": "UNENCRYPTED. Anyone with this file controls this identity. Back up your words instead."
+            }))?,
+        )?;
+        eprintln!(
+            "WARNING: seed stored UNENCRYPTED at {} (chmod 600). Use --passphrase to encrypt.",
+            seed_path(dir).display()
+        );
     }
     let chain = LocalChain::from_genesis();
     chain.save(dir)?;
-    show_id(&id);
+    show_id(id);
     println!("chain tip  {} (height {})", chain.tip_hash, chain.height);
     println!("genesis    {}", chain.genesis_hash);
     Ok(())
 }
 
-fn show_id(id: &Identity) {
+pub(crate) fn wallet_new(dir: &std::path::Path, words: usize, encrypt: bool) -> Result<()> {
+    if ![12, 15, 18, 21, 24].contains(&words) {
+        bail!("--words must be a BIP39 length: 12, 15, 18, 21 or 24 (24 recommended)");
+    }
+    if keystore_path(dir).exists() || seed_path(dir).exists() {
+        bail!("a wallet already exists in {}", dir.display());
+    }
+    let (mnemonic, id) = Identity::generate_mnemonic(words)?;
+    println!("================ WRITE THESE WORDS DOWN ================");
+    println!("{mnemonic}");
+    println!("=========================================================");
+    println!("They are shown only once. Anyone with them controls this identity.");
+    println!("Restore with: lastchange wallet restore \"<words>\"");
+    save_wallet(dir, &id, encrypt)
+}
+
+pub(crate) fn show_id(id: &Identity) {
     let k = id.kem_public();
     println!("pseudonym     {}\ned25519       {}\nml-dsa-65     {}… ({} bytes)\nx25519        {}\nml-kem-768    {}… ({} bytes)",
         id.pseudonym(), id.public_hex(), &id.pq_public_hex()[..32], id.pq_public_hex().len() / 2, k.x25519, &k.mlkem768[..32], k.mlkem768.len() / 2);
@@ -276,8 +327,20 @@ fn resolve(led: &Ledger, prefix: &str) -> Result<lc_ledger::Entry> {
 
 #[derive(Subcommand)]
 enum WalletCmd {
-    /// Create a new identity keystore (asks for a passphrase or uses LASTCHANGE_PASSPHRASE).
-    New,
+    /// Create a new identity from fresh BIP39 words (12 default, 24 recommended for PQ margin).
+    New {
+        #[arg(long, default_value_t = 12)]
+        words: usize,
+        /// Encrypt the stored seed with a passphrase (prompt or LASTCHANGE_PASSPHRASE).
+        #[arg(long)]
+        passphrase: bool,
+    },
+    /// Restore an identity from BIP39 words.
+    Restore {
+        words: String,
+        #[arg(long)]
+        passphrase: bool,
+    },
     /// Show public keys and pseudonym.
     Show,
     /// Print public keys as JSON plus the ENCRYPTED keystore for backup.
@@ -295,14 +358,22 @@ async fn main() -> Result<()> {
         println!("{}", env.id());
         Ok(env.id())
     };
-    match cli.cmd {
-        Cmd::Keygen
-        | Cmd::Wallet {
-            cmd: WalletCmd::New,
-        } => wallet_new(&cli.dir)?,
+    let cmd = match cli.cmd {
+        None | Some(Cmd::Wallet { cmd: None }) => return menu::run(&cli.dir, &cli.lang),
+        Some(c) => c,
+    };
+    match cmd {
+        Cmd::Keygen => wallet_new(&cli.dir, 12, false)?,
+        Cmd::Wallet { cmd: None } => unreachable!("handled by menu"),
+        Cmd::Wallet {
+            cmd: Some(WalletCmd::New { words, passphrase }),
+        } => wallet_new(&cli.dir, words, passphrase)?,
+        Cmd::Wallet {
+            cmd: Some(WalletCmd::Restore { words, passphrase }),
+        } => save_wallet(&cli.dir, &Identity::from_mnemonic(&words)?, passphrase)?,
         Cmd::Whoami
         | Cmd::Wallet {
-            cmd: WalletCmd::Show,
+            cmd: Some(WalletCmd::Show),
         } => {
             show_id(&load_id(&cli.dir)?);
             let chain = LocalChain::load_or_init(&cli.dir)?;
@@ -310,11 +381,14 @@ async fn main() -> Result<()> {
             println!("genesis    {}", chain.genesis_hash);
         }
         Cmd::Wallet {
-            cmd: WalletCmd::Export,
+            cmd: Some(WalletCmd::Export),
         } => {
             let id = load_id(&cli.dir)?;
-            let ks: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(keystore_path(&cli.dir))?)?;
+            let ks: serde_json::Value = if keystore_path(&cli.dir).exists() {
+                serde_json::from_str(&std::fs::read_to_string(keystore_path(&cli.dir))?)?
+            } else {
+                serde_json::json!("unencrypted seed.json (not exported; back up your words)")
+            };
             println!(
                 "{}",
                 serde_json::to_string_pretty(
