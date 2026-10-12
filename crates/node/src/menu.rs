@@ -68,24 +68,30 @@ pub fn run(dir: &Path, lang: Option<&str>, json: bool) -> Result<()> {
     };
     loop {
         println!("\n{}", t(lang, "title"));
-        for k in ["top1", "top2", "top3", "top4", "top5"] {
+        for k in ["top1", "top2", "top3", "top4", "top5", "top6"] {
             println!("  {}", t(lang, k));
         }
-        let Some(choice) = ask(lang, "choose", &mut input)? else {
+        let Some(choice) = ask(lang, "pj_choose", &mut input)? else {
             return Ok(());
         };
         let r: Result<bool> = match digits(&choice).as_str() {
-            "1" => wallet_menu(dir, lang, &mut input),
-            "2" => account(dir, lang, json, &mut input).map(|_| true),
-            "3" => {
+            "1" => account(dir, lang, json, None).map(|_| true),
+            "2" => wallet_menu(dir, lang, json, &mut input),
+            "3" => match ask(lang, "lookup_q", &mut input)? {
+                None => Ok(false),
+                Some(q) => {
+                    account(dir, lang, json, Some(q).filter(|q| !q.is_empty())).map(|_| true)
+                }
+            },
+            "4" => {
                 explorer_info(dir, lang, json);
                 Ok(true)
             }
-            "4" => {
+            "5" => {
                 send_info(lang, json);
                 Ok(true)
             }
-            "5" => {
+            "6" => {
                 println!("{}", t(lang, "bye"));
                 return Ok(());
             }
@@ -112,13 +118,13 @@ fn yes(s: &str) -> bool {
 }
 
 /// Wallet section. Returns Ok(false) on EOF.
-fn wallet_menu(dir: &Path, lang: &str, input: &mut impl BufRead) -> Result<bool> {
+fn wallet_menu(dir: &Path, lang: &str, json: bool, input: &mut impl BufRead) -> Result<bool> {
     loop {
-        println!("\n{}", t(lang, "top1"));
-        for k in ["m1", "m2", "m3", "wm4", "wm5"] {
+        println!("\n{}", t(lang, "top2"));
+        for k in ["m1", "m2", "m3", "wm4", "wm5", "wm6"] {
             println!("  {}", t(lang, k));
         }
-        let Some(choice) = ask(lang, "choose", input)? else {
+        let Some(choice) = ask(lang, "pj_choose", input)? else {
             return Ok(false);
         };
         let r: Result<()> = match digits(&choice).as_str() {
@@ -129,6 +135,14 @@ fn wallet_menu(dir: &Path, lang: &str, input: &mut impl BufRead) -> Result<bool>
                 };
                 match digits(&w).parse::<usize>() {
                     Ok(n) if [12, 15, 18, 24].contains(&n) => {
+                        if crate::wallet_exists(dir) {
+                            let Some(a) = ask(lang, "exists_q", input)? else {
+                                return Ok(false);
+                            };
+                            if !yes(&a) || !delete_flow(dir, lang, json, input)? {
+                                continue;
+                            }
+                        }
                         println!("{}", t(lang, "warn"));
                         let r = crate::wallet_new(dir, n, false);
                         if r.is_ok() {
@@ -172,8 +186,9 @@ fn wallet_menu(dir: &Path, lang: &str, input: &mut impl BufRead) -> Result<bool>
                     Ok(())
                 }
             },
-            "4" => paper(dir, lang, input),
-            "5" => return Ok(true),
+            "4" => delete_flow(dir, lang, json, input).map(|_| ()),
+            "5" => paper(dir, lang, input),
+            "6" => return Ok(true),
             _ => {
                 println!("{}", t(lang, "unknown"));
                 Ok(())
@@ -185,21 +200,48 @@ fn wallet_menu(dir: &Path, lang: &str, input: &mut impl BufRead) -> Result<bool>
     }
 }
 
-/// web-app-ready: read-only account view (pseudonym, ledger entries, reputation). No value logic.
-fn account(dir: &Path, lang: &str, json: bool, input: &mut impl BufRead) -> Result<()> {
-    let Some(q) = ask(lang, "lookup_q", input)? else {
-        return Ok(());
+/// web-app-ready: delete flow. Warn, require last 4 chars of the pseudonym, then move
+/// the folder to a backup. Returns Ok(true) if moved.
+fn delete_flow(dir: &Path, lang: &str, json: bool, input: &mut impl BufRead) -> Result<bool> {
+    let Ok(id) = crate::load_id(dir) else {
+        println!("{}", t(lang, "no_wallet"));
+        return Ok(false);
     };
-    let (pseudonym, pubkey) = if q.is_empty() {
-        match crate::load_id(dir) {
+    let p = id.pseudonym();
+    let code = &p[p.len() - 4..];
+    println!("{}\n{p}", t(lang, "del_warn"));
+    let Some(a) = ask(lang, "del_q", input)? else {
+        return Ok(false);
+    };
+    if a.trim().to_lowercase() != code.to_lowercase() {
+        println!("{}", t(lang, "del_cancel"));
+        return Ok(false);
+    }
+    let (to, files) = crate::wallet_delete(dir)?;
+    if json {
+        println!("{}", serde_json::json!({"moved_to": to, "files": files}));
+    } else {
+        println!("{} {}", t(lang, "del_done"), to.display());
+        for f in &files {
+            println!("  {f}");
+        }
+    }
+    std::fs::create_dir_all(dir)?;
+    Ok(true)
+}
+
+/// web-app-ready: read-only account view (pseudonym, ledger history, reputation). No value logic.
+/// `query = None` means the own wallet.
+fn account(dir: &Path, lang: &str, json: bool, query: Option<String>) -> Result<()> {
+    let (pseudonym, pubkey) = match &query {
+        Some(q) => (q.clone(), q.clone()),
+        None => match crate::load_id(dir) {
             Ok(id) => (id.pseudonym(), id.public_hex()),
             Err(_) => {
                 println!("{}", t(lang, "no_wallet"));
                 return Ok(());
             }
-        }
-    } else {
-        (q.clone(), q.clone())
+        },
     };
     let led = lc_ledger::Ledger::open(&dir.join("ledger.db"), 0)?;
     let items = crate::items(&led)?;
@@ -208,34 +250,53 @@ fn account(dir: &Path, lang: &str, json: bool, input: &mut impl BufRead) -> Resu
         .filter(|i| i.pseudonym == pseudonym || i.author == pubkey)
         .collect();
     let author = mine.first().map(|i| i.author.clone()).unwrap_or(pubkey);
+    let pseudonym = mine
+        .first()
+        .map(|i| i.pseudonym.clone())
+        .unwrap_or(pseudonym);
     let rep = lc_reputation::compute(&items, crate::now(), &Default::default());
     let score = rep.get(&author);
+    let kind = |i: &lc_reputation::Item| {
+        format!("{:?}", i.payload)
+            .split(['(', ' ', '{'])
+            .next()
+            .unwrap_or("")
+            .to_string()
+    };
     if json {
+        let hist: Vec<_> = mine
+            .iter()
+            .map(|i| serde_json::json!({"id": i.id, "kind": kind(i), "time": i.time}))
+            .collect();
         let v = serde_json::json!({
-            "query": q,
-            "pseudonym": mine.first().map(|i| i.pseudonym.clone()).unwrap_or(pseudonym),
+            "query": query,
+            "pseudonym": pseudonym,
             "pubkey": author,
-            "ledger_entries": mine.len(),
+            "holdings": 0,
+            "note": "testnet has no coins or on-chain value",
+            "history": hist,
             "reputation": score.map(|s| serde_json::json!({
                 "mean": s.mean, "count": s.count, "reports": s.reports, "strikes": s.strikes,
             })),
-            "holdings": 0,
-            "note": "testnet has no coins or on-chain value",
         });
         println!("{v}");
     } else {
-        println!(
-            "pseudonym  {pseudonym}\npubkey     {author}\nentries    {}",
-            mine.len()
-        );
+        println!("\npseudonym  {pseudonym}\npubkey     {author}\nholdings   0");
+        println!("{}", t(lang, "no_coin"));
         match score {
             Some(s) => println!(
-                "reputation mean {:.2} ({} ratings, {} reports, {} strikes)",
+                "reputation {:.2} ({} ratings, {} reports, {} strikes)",
                 s.mean, s.count, s.reports, s.strikes
             ),
             None => println!("reputation -"),
         }
-        println!("{}", t(lang, "no_coin"));
+        println!("{}", t(lang, "history"));
+        if mine.is_empty() {
+            println!("{}", t(lang, "no_history"));
+        }
+        for i in &mine {
+            println!("  {}  {}  {}", i.time, kind(i), &i.id[..i.id.len().min(16)]);
+        }
     }
     Ok(())
 }

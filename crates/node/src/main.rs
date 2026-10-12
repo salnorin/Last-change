@@ -255,6 +255,29 @@ pub(crate) fn wallet_new(dir: &std::path::Path, words: usize, encrypt: bool) -> 
     save_wallet(dir, &id, encrypt)
 }
 
+/// True if a seed or keystore exists in `dir`.
+pub(crate) fn wallet_exists(dir: &std::path::Path) -> bool {
+    keystore_path(dir).exists() || seed_path(dir).exists()
+}
+
+/// Move the whole wallet folder to `<dir>.deleted-<unix time>` (backup, not erased).
+/// Returns the new path and the moved file names.
+pub(crate) fn wallet_delete(dir: &std::path::Path) -> Result<(PathBuf, Vec<String>)> {
+    if !wallet_exists(dir) {
+        bail!("no wallet in {}", dir.display());
+    }
+    let mut files: Vec<String> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    files.sort();
+    let mut name = dir.as_os_str().to_owned();
+    name.push(format!(".deleted-{}", now()));
+    let to = PathBuf::from(name);
+    std::fs::rename(dir, &to)?;
+    Ok((to, files))
+}
+
 pub(crate) fn show_id(id: &Identity) {
     let k = id.kem_public();
     println!("pseudonym     {}\ned25519       {}\nml-dsa-65     {}… ({} bytes)\nx25519        {}\nml-kem-768    {}… ({} bytes)",
@@ -348,6 +371,12 @@ enum WalletCmd {
     },
     /// Show public keys and pseudonym.
     Show,
+    /// Move the wallet folder to `<dir>.deleted-<unix time>` (backup, never erased).
+    Delete {
+        /// Required: confirm you have your words.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Print public keys as JSON plus the ENCRYPTED keystore for backup.
     Export,
 }
@@ -378,6 +407,24 @@ async fn main() -> Result<()> {
         Cmd::Wallet {
             cmd: Some(WalletCmd::Restore { words, passphrase }),
         } => save_wallet(&cli.dir, &Identity::from_mnemonic(&words)?, passphrase)?,
+        Cmd::Wallet {
+            cmd: Some(WalletCmd::Delete { yes }),
+        } => {
+            if !yes {
+                bail!("refusing without --yes: your words are the only way to recover this wallet");
+            }
+            drop(led);
+            let (to, files) = wallet_delete(&cli.dir)?;
+            if cli.json {
+                println!("{}", serde_json::json!({"moved_to": to, "files": files}));
+            } else {
+                println!("moved {} -> {}", cli.dir.display(), to.display());
+                for f in files {
+                    println!("  {f}");
+                }
+            }
+            return Ok(());
+        }
         Cmd::Whoami
         | Cmd::Wallet {
             cmd: Some(WalletCmd::Show),
