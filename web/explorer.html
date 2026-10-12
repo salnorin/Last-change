@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Last-change explorer</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <h1>Last-change explorer</h1>
+  <p class="legal">Zero-value TESTNET. Coinbase value is always 0. EST has no value.</p>
+  <p class="muted" id="tip">Loading…</p>
+  <div id="list"></div>
+  <pre id="detail" class="muted"></pre>
+  <script type="module">
+    const tip = document.getElementById('tip');
+    const list = document.getElementById('list');
+    const detail = document.getElementById('detail');
+    const data = await (await fetch('/api/blocks')).json();
+    tip.textContent = `genesis ${data.genesis_hash} · tip ${data.tip_hash} · height ${data.height}`;
+    list.innerHTML = data.blocks.map(b =>
+      `<article class="card"><button type="button" data-h="${b.hash}">#${b.height} ${b.hash.slice(0,16)}…</button>
+       <span class="muted">bits ${b.bits} value ${b.value}</span></article>`).join('');
+    list.querySelectorAll('button').forEach(btn => btn.addEventListener('click', async () => {
+      const j = await (await fetch('/api/block/' + btn.dataset.h)).json();
+      detail.textContent = JSON.stringify(j, null, 2);
+    }));
+  </script>
+</body>
+</html>

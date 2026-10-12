@@ -1,5 +1,5 @@
 [package]
-name = "lastchange-node"
+name = "lastchange"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,13 +11,22 @@ path = "src/main.rs"
 lc-core.workspace = true
 lc-ledger.workspace = true
 lc-reputation.workspace = true
-lc-net.workspace = true
+lc-net= { workspace = true, optional = true }
 clap.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 hex.workspace = true
-axum.workspace = true
-futures.workspace = true
+axum= { workspace = true, optional = true }
+futures= { workspace = true, optional = true }
 serde.workspace = true
 rpassword = "7"
+tower-http = { version = "0.5", features = ["fs"], optional = true }
+lc-chain.workspace = true
+
+[features]
+default = ["full"]
+# P2P node, HTTP API, web app, explorer.
+full = ["dep:lc-net", "dep:axum", "dep:tower-http", "dep:futures"]
+# Wallet / keys / local ledger only (no libp2p, no ring): for Termux/Android.
+wallet = []

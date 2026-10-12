@@ -1,0 +1,44 @@
+name: release
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, name: lastchange-x86_64-linux }
+          - { os: ubuntu-latest, target: aarch64-unknown-linux-musl, name: lastchange-aarch64-linux-musl, cross: true }
+          - { os: ubuntu-latest, target: aarch64-linux-android, name: lastchange-wallet-aarch64-linux-android, ndk: true }
+          - { os: macos-latest, target: aarch64-apple-darwin, name: lastchange-aarch64-macos }
+          - { os: macos-latest, target: x86_64-apple-darwin, name: lastchange-x86_64-macos }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, name: lastchange-x86_64-windows.exe }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - name: Build (native)
+        if: ${{ !matrix.cross && !matrix.ndk }}
+        run: cargo build --release --locked -p lastchange --target ${{ matrix.target }}
+      - name: Build (cross, musl)
+        if: ${{ matrix.cross }}
+        run: |
+          cargo install cross --locked
+          cross build --release --locked -p lastchange --target ${{ matrix.target }}
+      - name: Build (Android NDK)
+        if: ${{ matrix.ndk }}
+        run: |
+          cargo install cargo-ndk --locked
+          cargo ndk -t arm64-v8a --platform 24 build --release --locked -p lastchange --no-default-features --features wallet
+      - name: Stage
+        shell: bash
+        run: |
+          B=target/${{ matrix.target }}/release/lastchange
+          [ -f "$B.exe" ] && B="$B.exe"
+          cp "$B" "${{ matrix.name }}"
+      - uses: actions/upload-artifact@v4
+        with: { name: "${{ matrix.name }}", path: "${{ matrix.name }}" }

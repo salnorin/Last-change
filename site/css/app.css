@@ -1,0 +1,86 @@
+:root {
+  --bg: #111;
+  --fg: #eee;
+  --muted: #999;
+  --card: #1a1a1a;
+  --border: #333;
+  --accent: #2b5;
+  --warn: #a63;
+  --focus: #6af;
+  --radius: 8px;
+  --space: 0.75rem;
+  --max: 40rem;
+}
+* { box-sizing: border-box; }
+html { font-size: 16px; }
+body {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  max-width: var(--max);
+  margin: 0 auto;
+  padding: var(--space);
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.45;
+}
+h1, h2 { line-height: 1.2; margin: 1rem 0 0.5rem; }
+h1 { font-size: 1.6rem; }
+h2 { font-size: 1.15rem; }
+a { color: var(--focus); }
+.legal {
+  border: 1px solid var(--warn);
+  padding: var(--space);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+}
+.muted { color: var(--muted); font-size: 0.85rem; }
+code { word-break: break-all; font-size: 0.85em; }
+.card {
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: var(--space);
+  margin: 0.5rem 0;
+}
+.stack { display: flex; flex-direction: column; gap: 0.4rem; }
+.row { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+label { font-size: 0.85rem; color: var(--muted); }
+input, select, textarea, button {
+  font: inherit;
+  padding: 0.5rem 0.6rem;
+  background: #222;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 100%;
+  min-height: 2.5rem;
+}
+textarea { min-height: 4.5rem; resize: vertical; }
+button {
+  cursor: pointer;
+  background: var(--accent);
+  color: #041;
+  border: none;
+  font-weight: 600;
+  width: auto;
+  min-width: 7rem;
+}
+button.secondary { background: #333; color: var(--fg); }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+#out {
+  white-space: pre-wrap;
+  background: #0a0a0a;
+  border-radius: var(--radius);
+  padding: var(--space);
+  min-height: 2rem;
+}
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0,0,0,0); border: 0;
+}
+@media (min-width: 640px) {
+  .row > input, .row > select { width: auto; flex: 1; }
+}
