@@ -23,10 +23,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Generate a local keypair (your only identity).
+    /// Alias for `wallet new`.
     Keygen,
-    /// Show your pseudonym and public key.
+    /// Show your pseudonym and public keys.
     Whoami,
+    /// Identity keystore: hybrid Ed25519 + ML-DSA-65 keys, Argon2id-encrypted. No balances.
+    Wallet { #[command(subcommand)] cmd: WalletCmd },
+    /// Encrypt a deal message to a peer (hybrid X25519 + ML-KEM-768).
+    MsgSeal { #[arg(long)] to_x25519: String, #[arg(long)] to_mlkem: String, #[arg(long, default_value = "")] aad: String, text: String },
+    /// Decrypt a deal message (JSON from msg-seal).
+    MsgOpen { #[arg(long, default_value = "")] aad: String, sealed_json: String },
     /// Post an offer or request.
     Post {
         #[arg(value_parser = ["offer", "request"])] kind: String,
@@ -74,17 +80,43 @@ enum Cmd {
 
 pub(crate) fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() }
 
+fn passphrase(confirm: bool) -> Result<String> {
+    if let Ok(p) = std::env::var("LASTCHANGE_PASSPHRASE") { return Ok(p); }
+    let p = rpassword::prompt_password("Keystore passphrase: ")?;
+    if confirm && rpassword::prompt_password("Repeat passphrase: ")? != p { bail!("passphrases differ"); }
+    Ok(p)
+}
+
+fn keystore_path(dir: &std::path::Path) -> PathBuf { dir.join("keystore.json") }
+
 fn load_id(dir: &std::path::Path) -> Result<Identity> {
-    let b = std::fs::read(dir.join("key")).context("no key; run `lastchange keygen`")?;
-    let a: [u8; 32] = b.try_into().map_err(|_| anyhow::anyhow!("bad key file"))?;
-    Ok(Identity::from_secret_bytes(&a))
+    let s = std::fs::read_to_string(keystore_path(dir)).context("no keystore; run `lastchange wallet new`")?;
+    let ks: keystore::Keystore = serde_json::from_str(&s)?;
+    Ok(ks.decrypt(&passphrase(false)?)?)
+}
+
+fn wallet_new(dir: &std::path::Path) -> Result<()> {
+    let p = keystore_path(dir);
+    if p.exists() { bail!("keystore already exists at {}", p.display()); }
+    let id = Identity::generate();
+    let ks = keystore::Keystore::encrypt(&id, &passphrase(true)?)?;
+    std::fs::write(&p, serde_json::to_string_pretty(&ks)?)?;
+    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?; }
+    show_id(&id);
+    Ok(())
+}
+
+fn show_id(id: &Identity) {
+    let k = id.kem_public();
+    println!("pseudonym     {}\ned25519       {}\nml-dsa-65     {}… ({} bytes)\nx25519        {}\nml-kem-768    {}… ({} bytes)",
+        id.pseudonym(), id.public_hex(), &id.pq_public_hex()[..32], id.pq_public_hex().len() / 2, k.x25519, &k.mlkem768[..32], k.mlkem768.len() / 2);
 }
 
 pub(crate) fn items(led: &Ledger) -> Result<Vec<lc_reputation::Item>> {
     Ok(led.all()?.into_iter().map(|e| {
         let time = match &e.payload { Payload::Listing(l) => l.created, Payload::DealAccept(a) => a.created,
             Payload::DealStep(s) => s.created, Payload::Claim(c) => c.created, _ => now() };
-        lc_reputation::Item { id: e.id, author: e.env.author, payload: e.payload, time }
+        lc_reputation::Item { id: e.id, pseudonym: e.env.author_pseudonym(), author: e.env.author, payload: e.payload, time }
     }).collect())
 }
 
@@ -94,10 +126,10 @@ fn print_listings(led: &Ledger, f: impl Fn(&Listing) -> bool) -> Result<()> {
     for i in &it {
         if let Payload::Listing(l) = &i.payload {
             if rep.get(&i.author).is_some_and(|s| s.struck) { continue; } // Proof of Trust: hide struck sellers
-            if l.expiry < now() || !f(l) || led.is_blocked(&i.author)? || led.is_blocked(&pseudonym_of(&i.author))? { continue; }
+            if l.expiry < now() || !f(l) || led.is_blocked(&i.author)? || led.is_blocked(&i.pseudonym)? { continue; }
             let r = rep.get(&i.author);
             println!("{} [{:?}] {} | {} | hint: {} | seller {} rep {:.2} ({} ratings, {} reports)",
-                &i.id[..16], l.kind, l.title, l.category, l.price_hint, &pseudonym_of(&i.author)[..12],
+                &i.id[..16], l.kind, l.title, l.category, l.price_hint, &i.pseudonym[..12],
                 r.map(|s| s.mean).unwrap_or(0.0), r.map(|s| s.count).unwrap_or(0), r.map(|s| s.reports).unwrap_or(0));
         }
     }
@@ -107,6 +139,16 @@ fn print_listings(led: &Ledger, f: impl Fn(&Listing) -> bool) -> Result<()> {
 fn resolve(led: &Ledger, prefix: &str) -> Result<lc_ledger::Entry> {
     let m: Vec<_> = led.all()?.into_iter().filter(|e| e.id.starts_with(prefix)).collect();
     match m.len() { 1 => Ok(m.into_iter().next().unwrap()), 0 => bail!("no entry {prefix}"), _ => bail!("ambiguous id {prefix}") }
+}
+
+#[derive(Subcommand)]
+enum WalletCmd {
+    /// Create a new identity keystore (asks for a passphrase or uses LASTCHANGE_PASSPHRASE).
+    New,
+    /// Show public keys and pseudonym.
+    Show,
+    /// Print public keys as JSON plus the ENCRYPTED keystore for backup.
+    Export,
 }
 
 #[tokio::main]
@@ -121,15 +163,22 @@ async fn main() -> Result<()> {
         Ok(env.id())
     };
     match cli.cmd {
-        Cmd::Keygen => {
-            let p = cli.dir.join("key");
-            if p.exists() { bail!("key already exists at {}", p.display()); }
-            let id = Identity::generate();
-            std::fs::write(&p, id.secret_bytes())?;
-            #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?; }
-            println!("pseudonym {}\npubkey    {}", id.pseudonym(), id.public_hex());
+        Cmd::Keygen | Cmd::Wallet { cmd: WalletCmd::New } => wallet_new(&cli.dir)?,
+        Cmd::Whoami | Cmd::Wallet { cmd: WalletCmd::Show } => show_id(&load_id(&cli.dir)?),
+        Cmd::Wallet { cmd: WalletCmd::Export } => {
+            let id = load_id(&cli.dir)?;
+            let ks: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(keystore_path(&cli.dir))?)?;
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({"pseudonym": id.pseudonym(), "ed25519": id.public_hex(),
+                "ml_dsa_65": id.pq_public_hex(), "kem": id.kem_public(), "encrypted_keystore": ks}))?);
         }
-        Cmd::Whoami => { let id = load_id(&cli.dir)?; println!("pseudonym {}\npubkey    {}", id.pseudonym(), id.public_hex()); }
+        Cmd::MsgSeal { to_x25519, to_mlkem, aad, text } => {
+            let s = channel::seal_to(&channel::KemPublic { x25519: to_x25519, mlkem768: to_mlkem }, text.as_bytes(), aad.as_bytes())?;
+            println!("{}", serde_json::to_string(&s)?);
+        }
+        Cmd::MsgOpen { aad, sealed_json } => {
+            let s: channel::Sealed = serde_json::from_str(&sealed_json)?;
+            println!("{}", String::from_utf8_lossy(&load_id(&cli.dir)?.open(&s, aad.as_bytes())?));
+        }
         Cmd::Post { kind, title, desc, price_hint, category, days, image } => {
             let kind = if kind == "offer" { ListingKind::Offer } else { ListingKind::Request };
             seal_add(Payload::Listing(Listing { kind, title, desc, price_hint, category, expiry: now() + days * 86400, image_hashes: image, created: now() }))?;

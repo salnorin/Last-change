@@ -4,9 +4,8 @@
 Mobile and web clients **never** run mining, circuit-pow stamps or STARK proving. Heavy work is done by the
 user's own desktop/server `lastchange serve` node, or by a node the user trusts:
 - **Today (implemented):** the web app calls the local node API, and the node signs and stamps.
-- **Next:** the client signs with its own key, and the node adds the stamp. This needs envelope v2, where the signature
-  covers `(author, body)` and the stamp nonce sits outside the signature but is bound to `H(author, body, sig)`. Until then,
-  `POST /api/envelope` accepts only fully sealed envelopes.
+- **Implemented (envelope v2):** the client signs with its own hybrid key (nonce = 0) and `POST /api/stamp`. The node verifies,
+  computes the stamp (bound to the signatures, outside them) and publishes. `POST /api/envelope` accepts fully sealed envelopes.
 
 ## Web app (`web/`, served by the node at `/`)
 - Implemented: a mobile-first single page with a listing list, search and filter, a create-ad form (offer/request,
