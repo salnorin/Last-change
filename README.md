@@ -71,3 +71,5 @@ encrypt it (Argon2id; it reads `LASTCHANGE_PASSPHRASE` or prompts).
 Interactive menu: run `lastchange` with no arguments (or `lastchange wallet`). Choose 1) new wallet, 2) restore
 from words, 3) show info, 4) exit. Menu text is Persian by default; use `--lang en` for English. Word counts:
 12 / 15 / 18 / 24. 16 is not a valid BIP39 length. 24 is recommended.
+
+Paper journal: menu option 5 records PAPER buy/sell entries (asset, quantity, price, optional fee, note) in a local `paper_journal.db`. It shows FIFO positions, average cost, realized P&L, and unrealized P&L at a price you type in, and can export CSV. It is never sent to the ledger or the network and involves no real money.

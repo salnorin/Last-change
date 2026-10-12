@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod api;
 #[cfg(feature = "full")]
 mod explorer;
+mod journal;
 mod menu;
 
 #[derive(Parser)]

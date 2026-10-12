@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Local PAPER trade journal (menu option 5): FIFO P&L, CSV export.
 - BIP39 wallet: `wallet new [--words 12|24] [--passphrase]`, `wallet restore`. No prompt by default.
 - Testnet genesis (zero value) with founding message and dedication; `wallet new/show` show chain tip.
 - `lastchange explorer` (/blocks, /block/:hash, circuit details). GitHub Pages site. `scripts/install.sh`, docs/TERMUX.md, release binaries (Linux, musl aarch64, Android, macOS, Windows).
